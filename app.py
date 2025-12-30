@@ -169,31 +169,18 @@ st.markdown("""<style>
 # =============================================================================
 def get_db_connection():
     try:
-        # ---------------------------------------------------------
-        # ENVIRONMENT DETECTION & CONFIGURATION
-        # ---------------------------------------------------------
-        
-        # Check if we are on a Linux server (like Streamlit Cloud/Hugging Face)
         if os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
             ssl_args = {
                 "ssl_verify_cert": True,
                 "ssl_ca": "/etc/ssl/certs/ca-certificates.crt"
             }
-            # On Linux servers, the C-extension works fine and is faster
             use_pure_mode = False 
-            
         else:
-            # We are likely on a local Mac or Windows machine
-            # Local machines often lack the specific CA bundle path or have Python/OpenSSL conflicts
             ssl_args = {
-                "ssl_verify_cert": False # Disable strict verification for local dev
+                "ssl_verify_cert": False
             }
-            # FORCE Pure Python mode to bypass the macOS SSL_CTX crash
             use_pure_mode = True 
             
-        # ---------------------------------------------------------
-        # CONNECT
-        # ---------------------------------------------------------
         conn = mysql.connector.connect(
             host=st.secrets["DB_HOST"],
             port=4000,
@@ -201,7 +188,7 @@ def get_db_connection():
             password=st.secrets["DB_PASSWORD"],
             database=st.secrets["DB_NAME"],
             connection_timeout=10,
-            use_pure=use_pure_mode,  # <--- This is the key fix for your error
+            use_pure=use_pure_mode,
             **ssl_args
         )
         return conn
@@ -228,7 +215,10 @@ def check_and_create_tables():
                 user_id VARCHAR(255) UNIQUE NOT NULL,
                 session_id VARCHAR(255),
                 last_active_date VARCHAR(20),
-                ai_level VARCHAR(50) DEFAULT 'Grade-Level'
+                ai_level VARCHAR(50) DEFAULT 'Grade-Level',
+                total_xp INT DEFAULT 0,
+                current_level INT DEFAULT 1,
+                streak_days INT DEFAULT 0
             );""")
 
             cursor.execute("""CREATE TABLE IF NOT EXISTS ChatLogs (
@@ -257,6 +247,18 @@ def check_and_create_tables():
                 completed_lessons JSON,
                 UNIQUE(user_id, path_id),
                 FOREIGN KEY (path_id) REFERENCES LearningPaths(id)
+            );""")
+
+            # NEW: Lesson Progress table for Knowledge Tree
+            cursor.execute("""CREATE TABLE IF NOT EXISTS LessonProgress (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id VARCHAR(255) NOT NULL,
+                lesson_id VARCHAR(100) NOT NULL,
+                status VARCHAR(50) DEFAULT 'locked',
+                started_at TIMESTAMP NULL,
+                completed_at TIMESTAMP NULL,
+                xp_earned INT DEFAULT 0,
+                UNIQUE(user_id, lesson_id)
             );""")
 
             conn.commit()
@@ -429,7 +431,6 @@ def sync_learning_paths():
         cursor = conn.cursor()
         cursor.execute(f"USE {st.secrets['DB_NAME']};")
 
-        # Categorized Paths
         paths = [
             ("Math", "Algebra I", "9th", 12, "Linear equations"),
             ("Math", "Geometry", "10th", 14, "Proofs & Shapes"),
@@ -454,6 +455,596 @@ def sync_learning_paths():
 sync_learning_paths()
 
 # =============================================================================
+# 6. KNOWLEDGE TREE COMPONENT (NEW!)
+# =============================================================================
+def render_knowledge_tree(user_id, grade, conn):
+    """Render the full-screen Knowledge Tree visualization"""
+    
+    # Get user's lesson progress from database
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM LessonProgress WHERE user_id = %s", (user_id,))
+    progress_rows = cursor.fetchall()
+    cursor.close()
+    
+    # Convert to dict for easy lookup
+    user_progress = {}
+    for row in progress_rows:
+        user_progress[row['lesson_id']] = row['status']
+    
+    # Convert progress to JSON for JavaScript
+    progress_json = json.dumps(user_progress)
+    
+    # The full-screen D3.js Knowledge Tree HTML
+    tree_html = f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <script src="https://d3js.org/d3.v7.min.js"></script>
+        <style>
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            
+            body {{
+                background: #1a2a3a;
+                overflow: hidden;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            }}
+            
+            #tree-container {{
+                width: 100vw;
+                height: 100vh;
+                position: relative;
+            }}
+            
+            svg {{
+                width: 100%;
+                height: 100%;
+            }}
+            
+            /* Close Button */
+            .close-btn {{
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                width: 50px;
+                height: 50px;
+                background: rgba(255, 255, 255, 0.1);
+                border: 2px solid #ffffff;
+                border-radius: 50%;
+                color: #ffffff;
+                font-size: 24px;
+                cursor: pointer;
+                z-index: 10000;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: all 0.3s ease;
+            }}
+            
+            .close-btn:hover {{
+                background: #e74c3c;
+                border-color: #e74c3c;
+                transform: scale(1.1);
+            }}
+            
+            /* Stats Panel */
+            .stats-panel {{
+                position: fixed;
+                bottom: 20px;
+                left: 20px;
+                background: rgba(0, 0, 0, 0.7);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 12px;
+                padding: 15px 20px;
+                color: white;
+                z-index: 9999;
+            }}
+            
+            .stats-panel h3 {{
+                margin-bottom: 10px;
+                color: #f1c40f;
+            }}
+            
+            .stat-row {{
+                display: flex;
+                justify-content: space-between;
+                margin: 5px 0;
+            }}
+            
+            /* Legend */
+            .legend {{
+                position: fixed;
+                top: 20px;
+                left: 20px;
+                background: rgba(0, 0, 0, 0.7);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 12px;
+                padding: 15px;
+                color: white;
+                z-index: 9999;
+                font-size: 12px;
+            }}
+            
+            .legend-item {{
+                display: flex;
+                align-items: center;
+                margin: 5px 0;
+            }}
+            
+            .legend-dot {{
+                width: 12px;
+                height: 12px;
+                border-radius: 50%;
+                margin-right: 8px;
+            }}
+            
+            /* Tooltip */
+            .tooltip {{
+                position: absolute;
+                background: rgba(0, 0, 0, 0.9);
+                border: 1px solid #f1c40f;
+                border-radius: 8px;
+                padding: 10px 15px;
+                color: white;
+                font-size: 14px;
+                pointer-events: none;
+                opacity: 0;
+                transition: opacity 0.2s;
+                z-index: 10001;
+                max-width: 250px;
+            }}
+            
+            .tooltip.visible {{
+                opacity: 1;
+            }}
+            
+            .tooltip h4 {{
+                color: #f1c40f;
+                margin-bottom: 5px;
+            }}
+            
+            .tooltip p {{
+                color: #ccc;
+                font-size: 12px;
+            }}
+            
+            /* Node styles */
+            .node-center {{
+                filter: drop-shadow(0 0 20px rgba(241, 196, 15, 0.8));
+            }}
+            
+            .node-subject {{
+                filter: drop-shadow(0 0 15px rgba(255, 255, 255, 0.3));
+            }}
+            
+            .node-course {{
+                cursor: pointer;
+                transition: transform 0.2s;
+            }}
+            
+            .node-lesson {{
+                cursor: pointer;
+            }}
+            
+            .node-lesson.locked {{
+                opacity: 0.3;
+                filter: blur(2px);
+                pointer-events: none;
+            }}
+            
+            .node-lesson.available {{
+                animation: pulse 2s infinite;
+            }}
+            
+            .node-lesson.completed {{
+                filter: drop-shadow(0 0 10px rgba(0, 230, 118, 0.8));
+            }}
+            
+            @keyframes pulse {{
+                0%, 100% {{ opacity: 1; }}
+                50% {{ opacity: 0.7; }}
+            }}
+            
+            /* Links */
+            .link {{
+                fill: none;
+                stroke: rgba(255, 255, 255, 0.2);
+                stroke-width: 2px;
+            }}
+            
+            .link-subject {{
+                stroke: rgba(255, 255, 255, 0.4);
+                stroke-width: 3px;
+            }}
+            
+            /* Fog overlay for locked content */
+            .fog-overlay {{
+                fill: url(#fog-gradient);
+                pointer-events: none;
+            }}
+            
+            /* Instructions */
+            .instructions {{
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                background: rgba(0, 0, 0, 0.7);
+                border: 1px solid rgba(255, 255, 255, 0.2);
+                border-radius: 12px;
+                padding: 15px;
+                color: white;
+                z-index: 9999;
+                font-size: 12px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div id="tree-container"></div>
+        
+        <button class="close-btn" onclick="closeTree()">✕</button>
+        
+        <div class="legend">
+            <div class="legend-item"><div class="legend-dot" style="background: #f1c40f;"></div> You</div>
+            <div class="legend-item"><div class="legend-dot" style="background: #3498db;"></div> Math</div>
+            <div class="legend-item"><div class="legend-dot" style="background: #27ae60;"></div> Science</div>
+            <div class="legend-item"><div class="legend-dot" style="background: #9b59b6;"></div> CS</div>
+            <div class="legend-item"><div class="legend-dot" style="background: #00E676;"></div> Completed</div>
+            <div class="legend-item"><div class="legend-dot" style="background: #37474F;"></div> Locked</div>
+        </div>
+        
+        <div class="stats-panel">
+            <h3>🎓 {grade} Student</h3>
+            <div class="stat-row"><span>Progress:</span><span id="progress-pct">0%</span></div>
+            <div class="stat-row"><span>Lessons:</span><span id="lessons-done">0/0</span></div>
+        </div>
+        
+        <div class="instructions">
+            <strong>Controls:</strong><br>
+            🖱️ Scroll to zoom<br>
+            ✋ Drag to pan<br>
+            👆 Click lesson to start
+        </div>
+        
+        <div class="tooltip" id="tooltip"></div>
+        
+        <script>
+            // User progress from database
+            const userProgress = {progress_json};
+            const userGrade = "{grade}";
+            
+            // Tree data structure
+            const treeData = {{
+                id: "center",
+                name: "YOU",
+                grade: userGrade,
+                type: "center",
+                children: [
+                    {{
+                        id: "math",
+                        name: "Mathematics",
+                        icon: "🧮",
+                        type: "subject",
+                        color: "#3498db",
+                        children: [
+                            {{ id: "algebra1", name: "Algebra I", type: "course", lessons: 12 }},
+                            {{ id: "geometry", name: "Geometry", type: "course", lessons: 14 }},
+                            {{ id: "algebra2", name: "Algebra II", type: "course", lessons: 15 }},
+                            {{ id: "precalc", name: "Pre-Calculus", type: "course", lessons: 16 }},
+                            {{ id: "calc1", name: "Calculus I", type: "course", lessons: 18 }}
+                        ]
+                    }},
+                    {{
+                        id: "science",
+                        name: "Science",
+                        icon: "🧬",
+                        type: "subject",
+                        color: "#27ae60",
+                        children: [
+                            {{ id: "biology", name: "Biology", type: "course", lessons: 14 }},
+                            {{ id: "chemistry", name: "Chemistry", type: "course", lessons: 16 }},
+                            {{ id: "physics", name: "Physics", type: "course", lessons: 15 }}
+                        ]
+                    }},
+                    {{
+                        id: "cs",
+                        name: "Computer Science",
+                        icon: "💻",
+                        type: "subject",
+                        color: "#9b59b6",
+                        children: [
+                            {{ id: "python", name: "Intro to Python", type: "course", lessons: 10 }}
+                        ]
+                    }}
+                ]
+            }};
+            
+            // Add lessons to courses
+            treeData.children.forEach(subject => {{
+                subject.children.forEach(course => {{
+                    course.children = [];
+                    for (let i = 1; i <= course.lessons; i++) {{
+                        const lessonId = `${{course.id}}_L${{i}}`;
+                        const isVisible = i <= 3; // First 3 lessons visible
+                        const status = userProgress[lessonId] || (isVisible ? 'available' : 'locked');
+                        course.children.push({{
+                            id: lessonId,
+                            name: `Lesson ${{i}}`,
+                            type: "lesson",
+                            lessonNum: i,
+                            status: status,
+                            visible: isVisible || status !== 'locked',
+                            courseId: course.id,
+                            courseName: course.name
+                        }});
+                    }}
+                }});
+            }});
+            
+            // Setup SVG
+            const width = window.innerWidth;
+            const height = window.innerHeight;
+            
+            const svg = d3.select("#tree-container")
+                .append("svg")
+                .attr("width", width)
+                .attr("height", height);
+            
+            // Add fog gradient
+            const defs = svg.append("defs");
+            const fogGradient = defs.append("radialGradient")
+                .attr("id", "fog-gradient")
+                .attr("cx", "50%")
+                .attr("cy", "50%")
+                .attr("r", "50%");
+            
+            fogGradient.append("stop")
+                .attr("offset", "60%")
+                .attr("stop-color", "transparent");
+            
+            fogGradient.append("stop")
+                .attr("offset", "100%")
+                .attr("stop-color", "#1a2a3a")
+                .attr("stop-opacity", "0.9");
+            
+            // Main group for zoom/pan
+            const g = svg.append("g");
+            
+            // Zoom behavior
+            const zoom = d3.zoom()
+                .scaleExtent([0.3, 3])
+                .on("zoom", (event) => {{
+                    g.attr("transform", event.transform);
+                }});
+            
+            svg.call(zoom);
+            
+            // Initial transform to center
+            svg.call(zoom.transform, d3.zoomIdentity.translate(width/2, height/2).scale(0.8));
+            
+            // Create hierarchical layout
+            const root = d3.hierarchy(treeData);
+            
+            // Custom radial layout
+            const radius = Math.min(width, height) / 2.5;
+            
+            // Position nodes
+            function positionNodes(node, angle = 0, level = 0, parentAngle = 0, angleSpan = Math.PI * 2) {{
+                if (level === 0) {{
+                    node.x = 0;
+                    node.y = 0;
+                }} else {{
+                    const r = level * 150;
+                    node.x = Math.cos(angle) * r;
+                    node.y = Math.sin(angle) * r;
+                }}
+                
+                if (node.children) {{
+                    const childCount = node.children.length;
+                    const childSpan = level === 0 ? Math.PI * 2 : angleSpan * 0.8;
+                    const startAngle = level === 0 ? 0 : angle - childSpan / 2;
+                    
+                    node.children.forEach((child, i) => {{
+                        const childAngle = startAngle + (childSpan / (childCount)) * (i + 0.5);
+                        positionNodes(child, childAngle, level + 1, angle, childSpan / childCount);
+                    }});
+                }}
+            }}
+            
+            positionNodes(root);
+            
+            // Draw links
+            const links = root.links();
+            
+            g.selectAll(".link")
+                .data(links)
+                .enter()
+                .append("path")
+                .attr("class", d => `link ${{d.source.data.type === 'center' ? 'link-subject' : ''}}`)
+                .attr("d", d => {{
+                    return `M${{d.source.x}},${{d.source.y}} Q${{(d.source.x + d.target.x) / 2}},${{(d.source.y + d.target.y) / 2}} ${{d.target.x}},${{d.target.y}}`;
+                }})
+                .style("stroke", d => {{
+                    if (d.target.data.type === 'lesson' && d.target.data.status === 'locked') {{
+                        return 'rgba(255,255,255,0.05)';
+                    }}
+                    return d.source.data.color || 'rgba(255,255,255,0.2)';
+                }});
+            
+            // Draw nodes
+            const nodes = root.descendants();
+            
+            const nodeGroups = g.selectAll(".node")
+                .data(nodes)
+                .enter()
+                .append("g")
+                .attr("class", d => `node node-${{d.data.type}} ${{d.data.status || ''}}`)
+                .attr("transform", d => `translate(${{d.x}},${{d.y}})`);
+            
+            // Node circles
+            nodeGroups.append("circle")
+                .attr("r", d => {{
+                    switch(d.data.type) {{
+                        case 'center': return 60;
+                        case 'subject': return 45;
+                        case 'course': return 30;
+                        case 'lesson': return 15;
+                        default: return 20;
+                    }}
+                }})
+                .attr("fill", d => {{
+                    if (d.data.type === 'center') return '#f1c40f';
+                    if (d.data.type === 'subject') return d.data.color;
+                    if (d.data.type === 'course') return d.parent.data.color;
+                    if (d.data.type === 'lesson') {{
+                        if (d.data.status === 'completed') return '#00E676';
+                        if (d.data.status === 'available') return d.parent.parent.data.color;
+                        return '#37474F';
+                    }}
+                    return '#fff';
+                }})
+                .attr("stroke", d => {{
+                    if (d.data.type === 'lesson' && d.data.status === 'available') {{
+                        return '#fff';
+                    }}
+                    return 'none';
+                }})
+                .attr("stroke-width", 2)
+                .style("opacity", d => {{
+                    if (d.data.type === 'lesson' && d.data.status === 'locked') return 0.3;
+                    return 1;
+                }})
+                .style("filter", d => {{
+                    if (d.data.type === 'lesson' && d.data.status === 'locked') return 'blur(2px)';
+                    return 'none';
+                }});
+            
+            // Node labels
+            nodeGroups.append("text")
+                .attr("dy", d => {{
+                    if (d.data.type === 'center') return 5;
+                    if (d.data.type === 'subject') return -55;
+                    if (d.data.type === 'course') return -40;
+                    return 30;
+                }})
+                .attr("text-anchor", "middle")
+                .attr("fill", "#fff")
+                .attr("font-size", d => {{
+                    switch(d.data.type) {{
+                        case 'center': return '14px';
+                        case 'subject': return '16px';
+                        case 'course': return '12px';
+                        case 'lesson': return '10px';
+                        default: return '12px';
+                    }}
+                }})
+                .attr("font-weight", d => d.data.type === 'subject' ? 'bold' : 'normal')
+                .text(d => {{
+                    if (d.data.type === 'center') return userGrade;
+                    if (d.data.type === 'subject') return d.data.icon + ' ' + d.data.name;
+                    if (d.data.type === 'course') return d.data.name;
+                    if (d.data.type === 'lesson') {{
+                        if (d.data.status === 'locked') return '???';
+                        return d.data.lessonNum;
+                    }}
+                    return d.data.name;
+                }})
+                .style("opacity", d => {{
+                    if (d.data.type === 'lesson' && d.data.status === 'locked') return 0.3;
+                    return 1;
+                }});
+            
+            // Center node special label
+            nodeGroups.filter(d => d.data.type === 'center')
+                .append("text")
+                .attr("dy", -70)
+                .attr("text-anchor", "middle")
+                .attr("fill", "#f1c40f")
+                .attr("font-size", "20px")
+                .attr("font-weight", "bold")
+                .text("🎓 YOU");
+            
+            // Tooltip
+            const tooltip = d3.select("#tooltip");
+            
+            nodeGroups
+                .on("mouseover", (event, d) => {{
+                    if (d.data.type === 'lesson' && d.data.status !== 'locked') {{
+                        tooltip.classed("visible", true)
+                            .style("left", (event.pageX + 15) + "px")
+                            .style("top", (event.pageY - 10) + "px")
+                            .html(`
+                                <h4>${{d.data.courseName}} - Lesson ${{d.data.lessonNum}}</h4>
+                                <p>Status: ${{d.data.status}}</p>
+                                <p>Click to start learning!</p>
+                            `);
+                    }} else if (d.data.type === 'course') {{
+                        tooltip.classed("visible", true)
+                            .style("left", (event.pageX + 15) + "px")
+                            .style("top", (event.pageY - 10) + "px")
+                            .html(`
+                                <h4>${{d.data.name}}</h4>
+                                <p>${{d.data.lessons}} lessons</p>
+                            `);
+                    }}
+                }})
+                .on("mouseout", () => {{
+                    tooltip.classed("visible", false);
+                }})
+                .on("click", (event, d) => {{
+                    if (d.data.type === 'lesson' && d.data.status !== 'locked') {{
+                        // Send message to Streamlit
+                        const lessonData = {{
+                            action: 'start_lesson',
+                            lessonId: d.data.id,
+                            lessonNum: d.data.lessonNum,
+                            courseId: d.data.courseId,
+                            courseName: d.data.courseName
+                        }};
+                        window.parent.postMessage({{type: 'streamlit:setComponentValue', value: lessonData}}, '*');
+                    }}
+                }});
+            
+            // Calculate stats
+            let totalLessons = 0;
+            let completedLessons = 0;
+            nodes.forEach(n => {{
+                if (n.data.type === 'lesson') {{
+                    totalLessons++;
+                    if (n.data.status === 'completed') completedLessons++;
+                }}
+            }});
+            
+            document.getElementById('progress-pct').textContent = Math.round((completedLessons / totalLessons) * 100) + '%';
+            document.getElementById('lessons-done').textContent = completedLessons + '/' + totalLessons;
+            
+            // Close function
+            function closeTree() {{
+                window.parent.postMessage({{type: 'streamlit:setComponentValue', value: {{action: 'close'}}}}, '*');
+            }}
+        </script>
+    </body>
+    </html>
+    '''
+    
+    # Render the tree full-screen
+    result = components.html(tree_html, height=800, scrolling=False)
+    
+    # Handle messages from the tree
+    if result:
+        if result.get('action') == 'close':
+            st.session_state.tree_view_open = False
+            st.rerun()
+        elif result.get('action') == 'start_lesson':
+            st.session_state.tree_view_open = False
+            st.session_state.selected_tree_lesson = result
+            st.rerun()
+
+# =============================================================================
 # 7. SESSION STATE INIT
 # =============================================================================
 if 'authenticated' not in st.session_state: st.session_state.authenticated = False
@@ -470,6 +1061,8 @@ if 'session_id' not in st.session_state: st.session_state.session_id = None
 if 'main_session_id' not in st.session_state: st.session_state.main_session_id = None
 if 'active_model_mode' not in st.session_state: st.session_state.active_model_mode = "⚡ Flash"
 if 'global_model_index' not in st.session_state: st.session_state.global_model_index = 0
+if 'tree_view_open' not in st.session_state: st.session_state.tree_view_open = False  # NEW!
+if 'selected_tree_lesson' not in st.session_state: st.session_state.selected_tree_lesson = None  # NEW!
 
 SUBJECT_OPTIONS = ["📜 History", "🧮 Math", "🧬 Science", "📚 English", "💻 Code", "🧠 General"]
 SUBJECT_VALUES = ["History", "Math", "Sci", "Eng", "Code", "Gen"]
@@ -541,7 +1134,59 @@ if not st.session_state.authenticated:
     st.stop()
 
 # =============================================================================
-# 9. MAIN UI ENGINE
+# 9. KNOWLEDGE TREE FULL-SCREEN HANDLER (NEW!)
+# =============================================================================
+if st.session_state.tree_view_open:
+    conn = get_db_connection()
+    if conn:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute(f"USE {st.secrets['DB_NAME']};")
+        
+        # Render the full-screen tree
+        render_knowledge_tree(
+            user_id=st.session_state.user_id,
+            grade=st.session_state.grade,
+            conn=conn
+        )
+        
+        cursor.close()
+        conn.close()
+    
+    st.stop()  # CRITICAL: Don't render anything else when tree is open
+
+# =============================================================================
+# 10. HANDLE LESSON SELECTED FROM TREE (NEW!)
+# =============================================================================
+if st.session_state.selected_tree_lesson:
+    lesson = st.session_state.selected_tree_lesson
+    st.session_state.selected_tree_lesson = None
+    
+    # Map course IDs to full names and get syllabus
+    course_map = {
+        'algebra1': 'Algebra I',
+        'geometry': 'Geometry', 
+        'algebra2': 'Algebra II',
+        'precalc': 'Pre-Calculus',
+        'calc1': 'Calculus I',
+        'biology': 'Biology',
+        'chemistry': 'Chemistry',
+        'physics': 'Physics',
+        'python': 'Intro to Python'
+    }
+    
+    course_name = course_map.get(lesson['courseId'], lesson['courseName'])
+    lesson_num = lesson['lessonNum']
+    
+    # Get lesson details from syllabus
+    syllabus = COURSE_SYLLABI.get(course_name, [])
+    if lesson_num <= len(syllabus):
+        lesson_info = syllabus[lesson_num - 1]
+        st.session_state.prompt_to_process = f"Teach {course_name} Lesson {lesson_num}: {lesson_info['title']}. {lesson_info['desc']}"
+    else:
+        st.session_state.prompt_to_process = f"Teach {course_name} Lesson {lesson_num}"
+
+# =============================================================================
+# 11. MAIN UI ENGINE
 # =============================================================================
 conn = get_db_connection()
 if conn:
@@ -600,6 +1245,7 @@ if conn:
             with c_a:
                  with st.popover("📸"): st.file_uploader("Img", key="top_up", label_visibility="collapsed")
 
+        # --- REPLACED: Learning Paths expander with Knowledge Tree button ---
         col_h, col_p = st.columns(2)
         with col_h:
             with st.expander("📂 Recent Chats", expanded=False):
@@ -610,16 +1256,10 @@ if conn:
                         st.session_state.messages = json.loads(row['messages'])
                         st.rerun()
         with col_p:
-            with st.expander("📚 Learning Paths", expanded=False):
-                sub_cats = ["Math", "Science", "Computer Science"]
-                for cat in sub_cats:
-                    with st.expander(f"📖 {cat}"):
-                        cursor.execute("SELECT * FROM LearningPaths WHERE subject=%s", (cat,))
-                        paths = cursor.fetchall()
-                        for p in paths:
-                            if st.button(p['course_title'], key=f"top_p_{p['id']}", use_container_width=True):
-                                st.session_state.current_path = p['id']
-                                st.rerun()
+            # NEW: Knowledge Tree Button!
+            if st.button("🌳 Knowledge Tree", type="primary", use_container_width=True):
+                st.session_state.tree_view_open = True
+                st.rerun()
 
     # --- LAYOUT B: ACTIVE CHAT ---
     else:
@@ -632,128 +1272,94 @@ if conn:
         st.markdown('<div style="height: 380px;"></div>', unsafe_allow_html=True)
 
         with st.container():
-            if st.session_state.current_path and p_data:
-                title = p_data['course_title']
-                total = p_data['total_lessons']
-                curr = st.session_state.current_lesson
-                syl_list = COURSE_SYLLABI.get(title, [])
+            if st.session_state.current_path:
+                cursor.execute("SELECT * FROM LearningPaths WHERE id = %s", (st.session_state.current_path,))
+                p_data = cursor.fetchone()
+                
+                if p_data:
+                    title = p_data['course_title']
+                    total = p_data['total_lessons']
+                    curr = st.session_state.current_lesson
+                    syl_list = COURSE_SYLLABI.get(title, [])
 
-                if curr <= len(syl_list):
-                    c_info = syl_list[curr-1]
-                    t_title = c_info['title']
-                    t_desc = c_info['desc']
-                else:
-                    t_title = "Complete"; t_desc = "Review"
-
-                st.caption(f"🎓 **{title}**: {t_title}")
-
-                # =====================================================================
-                # SOCIAL MEDIA STYLE PROGRESS PILLS & STATS (SMART ESTIMATION)
-                # =====================================================================
-                bar_data = []
-                total_mins_left = 0
-                completed_count = 0
-
-                # 1. Prepare Data & Calculate Individual Lesson Times
-                for i in range(1, total+1):
-                    l_meta = syl_list[i-1] if i <= len(syl_list) else {"title": f"L{i}", "desc": ""}
-                    stat = "Completed" if i < curr else ("Current" if i == curr else "Upcoming")
-
-                    # Smart Estimation Logic: Base 15 mins + complexity based on description length.
-                    # Capped between 15 and 22 minutes per lesson.
-                    desc_complexity = len(l_meta.get('desc', ''))
-                    est_duration = 15 + min(7, int(desc_complexity / 10))
-
-                    # Vibrant, Neon Color Palette for Dark Mode
-                    if stat == "Completed":
-                        color = "#00E676" # Neon Green
-                        completed_count += 1
-                    elif stat == "Current":
-                        color = "#FFD700" # Glowing Gold
-                        total_mins_left += est_duration
+                    if curr <= len(syl_list):
+                        c_info = syl_list[curr-1]
+                        t_title = c_info['title']
+                        t_desc = c_info['desc']
                     else:
-                        color = "#37474F" # Muted Blue-Grey (Upcoming)
-                        total_mins_left += est_duration
+                        t_title = "Complete"; t_desc = "Review"
 
-                    bar_data.append({
-                        "Lesson": i,
-                        "Topic": l_meta['title'],
-                        "Status": stat,
-                        "Color": color,
-                        "Value": 1, # Equal width for all pills
-                        "Duration": f"{est_duration} min" # Formatting for tooltip
-                    })
+                    st.caption(f"🎓 **{title}**: {t_title}")
 
-                # 2. Calculate Aggregate Header Stats
-                percent_done = int((completed_count / total) * 100) if total > 0 else 0
+                    # Progress bar
+                    bar_data = []
+                    total_mins_left = 0
+                    completed_count = 0
 
-                if total_mins_left > 60:
-                    h_left = total_mins_left // 60
-                    m_left = total_mins_left % 60
-                    time_str = f"{h_left}h {m_left}m"
-                else:
-                    time_str = f"{total_mins_left}m"
+                    for i in range(1, total+1):
+                        l_meta = syl_list[i-1] if i <= len(syl_list) else {"title": f"L{i}", "desc": ""}
+                        stat = "Completed" if i < curr else ("Current" if i == curr else "Upcoming")
+                        desc_complexity = len(l_meta.get('desc', ''))
+                        est_duration = 15 + min(7, int(desc_complexity / 10))
 
-                # 3. Render Stylish Header (Flexbox for alignment)
-                st.markdown(f"""
-                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8px; font-family: sans-serif;">
-                    <span style="font-size: 1.1em; font-weight: 700; color: #00E676; letter-spacing: 0.5px;">🚀 {percent_done}% Complete</span>
-                    <span style="font-size: 0.95em; font-weight: 600; color: #FFD700; letter-spacing: 0.5px;">⏱️ {time_str} Left</span>
-                </div>
-                """, unsafe_allow_html=True)
+                        if stat == "Completed":
+                            color = "#00E676"
+                            completed_count += 1
+                        elif stat == "Current":
+                            color = "#FFD700"
+                            total_mins_left += est_duration
+                        else:
+                            color = "#37474F"
+                            total_mins_left += est_duration
 
-                # 4. Render Altair Chart (Social Media "Pills" Design)
-                chart = alt.Chart(pd.DataFrame(bar_data)).mark_bar(
-                    cornerRadius=12,       # High corner radius for distinct "pill" shape
-                    stroke='transparent',
-                    height=45,             # Taller bars for easier hovering/tapping
-                    cursor='pointer'       # Hand cursor on hover
-                ).encode(
-                    # Use Ordinal (:O) for X axis to separate into distinct, non-stacked bars
-                    x=alt.X('Lesson:O', axis=None),
-                    color=alt.Color('Color', scale=None, legend=None),
-                    # Richer tooltip with estimation data
-                    tooltip=[
-                        alt.Tooltip('Lesson', title='Lesson #'),
-                        alt.Tooltip('Topic'),
-                        alt.Tooltip('Status'),
-                        alt.Tooltip('Duration', title='Est. Time')
-                    ],
-                    order=alt.Order('Lesson', sort='ascending')
-                ).configure_scale(
-                    bandPaddingInner=0.25  # Significant spacing between pills
-                ).configure_view(
-                    stroke=None            # Remove outer chart border
-                ).properties(
-                    height=65,             # Total chart area height to accommodate hover effects
-                    width='container'
-                )
-                st.altair_chart(chart, use_container_width=True)
-                # =====================================================================
+                        bar_data.append({
+                            "Lesson": i, "Topic": l_meta['title'], "Status": stat,
+                            "Color": color, "Value": 1, "Duration": f"{est_duration} min"
+                        })
 
-                b1, b2, b3 = st.columns([1, 1, 0.5])
-                with b1:
-                    if st.button(f"▶ Start Lesson {curr}", key=f"s_{curr}", type="primary", use_container_width=True):
-                        st.session_state.prompt_to_process = f"Teach {title} Lesson {curr}: {t_title}. {t_desc}"
-                        st.rerun()
-                with b2:
-                    if st.button("✔ Next", key=f"c_{curr}", use_container_width=True):
-                        cursor.execute("SELECT completed_lessons FROM UserPathProgress WHERE user_id=%s AND path_id=%s", (st.session_state.user_id, pid))
-                        exists = cursor.fetchone()
-                        done = json.loads(exists['completed_lessons']) if exists else []
-                        if curr not in done:
-                            done.append(curr)
-                            nxt = curr + 1 if curr < total else curr
-                            cursor.execute("INSERT INTO UserPathProgress (user_id, path_id, current_lesson, completed_lessons) VALUES (%s,%s,%s,%s) ON DUPLICATE KEY UPDATE current_lesson=%s, completed_lessons=%s", (st.session_state.user_id, pid, nxt, json.dumps(done), nxt, json.dumps(done)))
-                            conn.commit()
-                            st.session_state.current_lesson = nxt
+                    percent_done = int((completed_count / total) * 100) if total > 0 else 0
+                    time_str = f"{total_mins_left // 60}h {total_mins_left % 60}m" if total_mins_left > 60 else f"{total_mins_left}m"
+
+                    st.markdown(f"""
+                    <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8px;">
+                        <span style="font-size: 1.1em; font-weight: 700; color: #00E676;">🚀 {percent_done}% Complete</span>
+                        <span style="font-size: 0.95em; font-weight: 600; color: #FFD700;">⏱️ {time_str} Left</span>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    chart = alt.Chart(pd.DataFrame(bar_data)).mark_bar(
+                        cornerRadius=12, stroke='transparent', height=45, cursor='pointer'
+                    ).encode(
+                        x=alt.X('Lesson:O', axis=None),
+                        color=alt.Color('Color', scale=None, legend=None),
+                        tooltip=['Lesson', 'Topic', 'Status', 'Duration'],
+                        order=alt.Order('Lesson', sort='ascending')
+                    ).configure_scale(bandPaddingInner=0.25).configure_view(stroke=None).properties(height=65, width='container')
+                    st.altair_chart(chart, use_container_width=True)
+
+                    b1, b2, b3 = st.columns([1, 1, 0.5])
+                    with b1:
+                        if st.button(f"▶ Start Lesson {curr}", key=f"s_{curr}", type="primary", use_container_width=True):
+                            st.session_state.prompt_to_process = f"Teach {title} Lesson {curr}: {t_title}. {t_desc}"
+                            st.rerun()
+                    with b2:
+                        if st.button("✔ Next", key=f"c_{curr}", use_container_width=True):
+                            cursor.execute("SELECT completed_lessons FROM UserPathProgress WHERE user_id=%s AND path_id=%s", (st.session_state.user_id, st.session_state.current_path))
+                            exists = cursor.fetchone()
+                            done = json.loads(exists['completed_lessons']) if exists else []
+                            if curr not in done:
+                                done.append(curr)
+                                nxt = curr + 1 if curr < total else curr
+                                cursor.execute("INSERT INTO UserPathProgress (user_id, path_id, current_lesson, completed_lessons) VALUES (%s,%s,%s,%s) ON DUPLICATE KEY UPDATE current_lesson=%s, completed_lessons=%s", (st.session_state.user_id, st.session_state.current_path, nxt, json.dumps(done), nxt, json.dumps(done)))
+                                conn.commit()
+                                st.session_state.current_lesson = nxt
+                                st.session_state.messages = []
+                                st.rerun()
+                    with b3:
+                        if st.button("❌"):
+                            st.session_state.current_path = None
                             st.session_state.messages = []
                             st.rerun()
-                with b3:
-                    if st.button("❌"):
-                        st.session_state.current_path = None
-                        st.session_state.messages = []
-                        st.rerun()
 
             f_rem = max(0, 100 - st.session_state.flash_usage)
             p_rem = max(0, 5 - st.session_state.pro_usage)
@@ -773,7 +1379,7 @@ if conn:
                 c_in.text_input("Msg", key="bot_input", placeholder="Ask Sorokin...", label_visibility="collapsed")
                 c_btn.form_submit_button("🚀", on_click=submit_bottom)
 
-            c_h, c_s, c_m, c_st, c_a = st.columns([1, 1, 1, 1, 0.4])
+            c_h, c_t, c_s, c_m, c_st, c_a = st.columns([1, 0.6, 1, 1, 1, 0.4])  # Added tree button column
 
             with c_h:
                 with st.popover("📂", use_container_width=True):
@@ -793,6 +1399,13 @@ if conn:
                             st.session_state.messages = json.loads(row['messages'])
                             st.rerun()
                     if st.button("Log Out"): st.session_state.authenticated = False; st.rerun()
+            
+            # NEW: Tree button in bottom bar
+            with c_t:
+                if st.button("🌳", use_container_width=True, help="Knowledge Tree"):
+                    st.session_state.tree_view_open = True
+                    st.rerun()
+                    
             with c_s: st.selectbox("S", SUBJECT_OPTIONS, index=5, label_visibility="collapsed")
             with c_m: st.selectbox("M", MODEL_OPTIONS, key="model_selector", index=st.session_state.global_model_index, label_visibility="collapsed")
 
