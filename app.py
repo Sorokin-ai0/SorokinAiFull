@@ -176,8 +176,8 @@ def get_db_connection():
                 "ssl_ca": "/etc/ssl/certs/ca-certificates.crt"
             }
         else:
-            # Fallback for local Mac/Windows development where path might differ
-            # Disabling strict verification locally to avoid SSL_CTX errors while maintaining encryption
+            # Fallback for local Mac/Windows development
+            # Disabling strict verification locally 
             ssl_args = {"ssl_verify_cert": False}
 
         conn = mysql.connector.connect(
@@ -187,6 +187,7 @@ def get_db_connection():
             password=st.secrets["DB_PASSWORD"],
             database=st.secrets["DB_NAME"],
             connection_timeout=10,
+            use_pure=True,  # <--- CRITICAL FIX FOR MAC OS (Prevents SSL_CTX crash)
             **ssl_args
         )
         return conn
