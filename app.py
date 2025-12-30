@@ -686,7 +686,7 @@ def render_knowledge_tree(user_id, grade, conn):
     <body>
         <div id="tree-container"></div>
         
-        <button class="close-btn" onclick="closeTree()">✕</button>
+        <button class="close-btn" id="close-btn">✕</button>
         
         <div class="legend">
             <div class="legend-item"><div class="legend-dot" style="background: #f1c40f;"></div> You</div>
@@ -997,7 +997,7 @@ def render_knowledge_tree(user_id, grade, conn):
                 }})
                 .on("click", (event, d) => {{
                     if (d.data.type === 'lesson' && d.data.status !== 'locked') {{
-                        // Send message to Streamlit
+                        // Store in sessionStorage for Streamlit to read
                         const lessonData = {{
                             action: 'start_lesson',
                             lessonId: d.data.id,
@@ -1005,7 +1005,9 @@ def render_knowledge_tree(user_id, grade, conn):
                             courseId: d.data.courseId,
                             courseName: d.data.courseName
                         }};
-                        window.parent.postMessage({{type: 'streamlit:setComponentValue', value: lessonData}}, '*');
+                        sessionStorage.setItem('tree_action', JSON.stringify(lessonData));
+                        // Trigger page reload to let Streamlit handle it
+                        window.parent.location.reload();
                     }}
                 }});
             
@@ -1022,27 +1024,23 @@ def render_knowledge_tree(user_id, grade, conn):
             document.getElementById('progress-pct').textContent = Math.round((completedLessons / totalLessons) * 100) + '%';
             document.getElementById('lessons-done').textContent = completedLessons + '/' + totalLessons;
             
-            // Close function
-            function closeTree() {{
-                window.parent.postMessage({{type: 'streamlit:setComponentValue', value: {{action: 'close'}}}}, '*');
-            }}
+            // Close button handler
+            document.getElementById('close-btn').addEventListener('click', function() {{
+                sessionStorage.setItem('tree_action', JSON.stringify({{action: 'close'}}));
+                window.parent.location.reload();
+            }});
         </script>
     </body>
     </html>
     '''
     
     # Render the tree full-screen
-    result = components.html(tree_html, height=800, scrolling=False)
+    components.html(tree_html, height=800, scrolling=False)
     
-    # Handle messages from the tree
-    if result:
-        if result.get('action') == 'close':
-            st.session_state.tree_view_open = False
-            st.rerun()
-        elif result.get('action') == 'start_lesson':
-            st.session_state.tree_view_open = False
-            st.session_state.selected_tree_lesson = result
-            st.rerun()
+    # Add a Streamlit close button as backup
+    if st.button("← Back to Chat", key="tree_back_btn"):
+        st.session_state.tree_view_open = False
+        st.rerun()
 
 # =============================================================================
 # 7. SESSION STATE INIT
@@ -1061,8 +1059,8 @@ if 'session_id' not in st.session_state: st.session_state.session_id = None
 if 'main_session_id' not in st.session_state: st.session_state.main_session_id = None
 if 'active_model_mode' not in st.session_state: st.session_state.active_model_mode = "⚡ Flash"
 if 'global_model_index' not in st.session_state: st.session_state.global_model_index = 0
-if 'tree_view_open' not in st.session_state: st.session_state.tree_view_open = False  # NEW!
-if 'selected_tree_lesson' not in st.session_state: st.session_state.selected_tree_lesson = None  # NEW!
+if 'tree_view_open' not in st.session_state: st.session_state.tree_view_open = False
+if 'selected_tree_lesson' not in st.session_state: st.session_state.selected_tree_lesson = None
 
 SUBJECT_OPTIONS = ["📜 History", "🧮 Math", "🧬 Science", "📚 English", "💻 Code", "🧠 General"]
 SUBJECT_VALUES = ["History", "Math", "Sci", "Eng", "Code", "Gen"]
@@ -1379,7 +1377,7 @@ if conn:
                 c_in.text_input("Msg", key="bot_input", placeholder="Ask Sorokin...", label_visibility="collapsed")
                 c_btn.form_submit_button("🚀", on_click=submit_bottom)
 
-            c_h, c_t, c_s, c_m, c_st, c_a = st.columns([1, 0.6, 1, 1, 1, 0.4])  # Added tree button column
+            c_h, c_t, c_s, c_m, c_st, c_a = st.columns([1, 0.6, 1, 1, 1, 0.4])
 
             with c_h:
                 with st.popover("📂", use_container_width=True):
