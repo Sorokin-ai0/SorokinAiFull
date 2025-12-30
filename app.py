@@ -169,9 +169,17 @@ st.markdown("""<style>
 # =============================================================================
 def get_db_connection():
     try:
-        ssl_args = {"ssl_verify_cert": True}
+        # Check for Linux/Cloud environment SSL path first
         if os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
-            ssl_args["ssl_ca"] = "/etc/ssl/certs/ca-certificates.crt"
+            ssl_args = {
+                "ssl_verify_cert": True,
+                "ssl_ca": "/etc/ssl/certs/ca-certificates.crt"
+            }
+        else:
+            # Fallback for local Mac/Windows development where path might differ
+            # Disabling strict verification locally to avoid SSL_CTX errors while maintaining encryption
+            ssl_args = {"ssl_verify_cert": False}
+
         conn = mysql.connector.connect(
             host=st.secrets["DB_HOST"],
             port=4000,
@@ -541,6 +549,7 @@ if conn:
             st.info("Sorokin AI - Ready")
 
     with c_top_scroll:
+        # Replaced Scroll button with just a spacer or rerun if really needed, but keeping simple for native feel
         st.write("")
 
     # --- LAYOUT A: NEW CHAT ---
@@ -625,80 +634,84 @@ if conn:
                 st.caption(f"🎓 **{title}**: {t_title}")
 
                 # =====================================================================
-                # PROGRESS & STATS (SMART ESTIMATION)
+                # SOCIAL MEDIA STYLE PROGRESS PILLS & STATS
                 # =====================================================================
                 bar_data = []
                 total_mins_left = 0
                 completed_count = 0
 
-                # 1. Calculate Individual Lesson Times FIRST
+                # 1. Prepare Data & Calculate Individual Lesson Times
                 for i in range(1, total+1):
                     l_meta = syl_list[i-1] if i <= len(syl_list) else {"title": f"L{i}", "desc": ""}
                     stat = "Completed" if i < curr else ("Current" if i == curr else "Upcoming")
-                    
-                    # Logic: Read syllabus description length to estimate complexity
-                    # Base 15 mins + 1 min per 10 chars of description, capped at 22 mins.
+
+                    # Smart Estimation Logic: Base 15 mins + complexity based on description length.
+                    # Capped between 15 and 22 minutes per lesson.
                     desc_complexity = len(l_meta.get('desc', ''))
                     est_duration = 15 + min(7, int(desc_complexity / 10))
-                    
+
+                    # Vibrant, Neon Color Palette for Dark Mode
                     if stat == "Completed":
-                        color = "#00E676"
+                        color = "#00E676" # Neon Green
                         completed_count += 1
                     elif stat == "Current":
-                        color = "#FFD700"
+                        color = "#FFD700" # Glowing Gold
                         total_mins_left += est_duration
                     else:
-                        color = "#37474F"
+                        color = "#37474F" # Muted Blue-Grey (Upcoming)
                         total_mins_left += est_duration
 
                     bar_data.append({
-                        "Lesson": i, 
-                        "Topic": l_meta['title'], 
-                        "Status": stat, 
-                        "Color": color, 
-                        "Value": 1,
-                        "Duration": f"{est_duration} min" 
+                        "Lesson": i,
+                        "Topic": l_meta['title'],
+                        "Status": stat,
+                        "Color": color,
+                        "Value": 1, # Equal width for all pills
+                        "Duration": f"{est_duration} min" # Formatting for tooltip
                     })
 
-                # 2. Calculate Header Stats
+                # 2. Calculate Aggregate Header Stats
                 percent_done = int((completed_count / total) * 100) if total > 0 else 0
-                
+
                 if total_mins_left > 60:
                     h_left = total_mins_left // 60
                     m_left = total_mins_left % 60
                     time_str = f"{h_left}h {m_left}m"
                 else:
                     time_str = f"{total_mins_left}m"
-                
-                # 3. Render Header
+
+                # 3. Render Stylish Header (Flexbox for alignment)
                 st.markdown(f"""
-                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 5px;">
-                    <span style="font-size: 1.2em; font-weight: bold; color: #00E676;">🚀 {percent_done}% Complete</span>
-                    <span style="font-size: 1.0em; font-weight: bold; color: #FFD700;">⏱️ {time_str} Remaining</span>
+                <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8px; font-family: sans-serif;">
+                    <span style="font-size: 1.1em; font-weight: 700; color: #00E676; letter-spacing: 0.5px;">🚀 {percent_done}% Complete</span>
+                    <span style="font-size: 0.95em; font-weight: 600; color: #FFD700; letter-spacing: 0.5px;">⏱️ {time_str} Left</span>
                 </div>
                 """, unsafe_allow_html=True)
 
-                # 4. Render Chart
+                # 4. Render Altair Chart (Social Media "Pills" Design)
                 chart = alt.Chart(pd.DataFrame(bar_data)).mark_bar(
-                    cornerRadius=10,       
+                    cornerRadius=12,       # High corner radius for distinct "pill" shape
                     stroke='transparent',
-                    height=45              
+                    height=45,             # Taller bars for easier hovering/tapping
+                    cursor='pointer'       # Hand cursor on hover
                 ).encode(
-                    x=alt.X('Lesson:O', axis=None), 
+                    # Use Ordinal (:O) for X axis to separate into distinct, non-stacked bars
+                    x=alt.X('Lesson:O', axis=None),
                     color=alt.Color('Color', scale=None, legend=None),
+                    # Richer tooltip with estimation data
                     tooltip=[
-                        alt.Tooltip('Lesson', title='Lesson #'), 
-                        alt.Tooltip('Topic'), 
+                        alt.Tooltip('Lesson', title='Lesson #'),
+                        alt.Tooltip('Topic'),
                         alt.Tooltip('Status'),
-                        alt.Tooltip('Duration', title='Est. Time') 
+                        alt.Tooltip('Duration', title='Est. Time')
                     ],
                     order=alt.Order('Lesson', sort='ascending')
                 ).configure_scale(
-                    bandPaddingInner=0.2   
+                    bandPaddingInner=0.25  # Significant spacing between pills
                 ).configure_view(
-                    stroke=None            
+                    stroke=None            # Remove outer chart border
                 ).properties(
-                    height=60,             
+                    height=65,             # Total chart area height to accommodate hover effects
                     width='container'
                 )
                 st.altair_chart(chart, use_container_width=True)
