@@ -169,17 +169,31 @@ st.markdown("""<style>
 # =============================================================================
 def get_db_connection():
     try:
-        # Check for Linux/Cloud environment SSL path first
+        # ---------------------------------------------------------
+        # ENVIRONMENT DETECTION & CONFIGURATION
+        # ---------------------------------------------------------
+        
+        # Check if we are on a Linux server (like Streamlit Cloud/Hugging Face)
         if os.path.exists("/etc/ssl/certs/ca-certificates.crt"):
             ssl_args = {
                 "ssl_verify_cert": True,
                 "ssl_ca": "/etc/ssl/certs/ca-certificates.crt"
             }
+            # On Linux servers, the C-extension works fine and is faster
+            use_pure_mode = False 
+            
         else:
-            # Fallback for local Mac/Windows development
-            # Disabling strict verification locally 
-            ssl_args = {"ssl_verify_cert": False}
-
+            # We are likely on a local Mac or Windows machine
+            # Local machines often lack the specific CA bundle path or have Python/OpenSSL conflicts
+            ssl_args = {
+                "ssl_verify_cert": False # Disable strict verification for local dev
+            }
+            # FORCE Pure Python mode to bypass the macOS SSL_CTX crash
+            use_pure_mode = True 
+            
+        # ---------------------------------------------------------
+        # CONNECT
+        # ---------------------------------------------------------
         conn = mysql.connector.connect(
             host=st.secrets["DB_HOST"],
             port=4000,
@@ -187,7 +201,7 @@ def get_db_connection():
             password=st.secrets["DB_PASSWORD"],
             database=st.secrets["DB_NAME"],
             connection_timeout=10,
-            use_pure=True,  # <--- CRITICAL FIX FOR MAC OS (Prevents SSL_CTX crash)
+            use_pure=use_pure_mode,  # <--- This is the key fix for your error
             **ssl_args
         )
         return conn
@@ -550,7 +564,6 @@ if conn:
             st.info("Sorokin AI - Ready")
 
     with c_top_scroll:
-        # Replaced Scroll button with just a spacer or rerun if really needed, but keeping simple for native feel
         st.write("")
 
     # --- LAYOUT A: NEW CHAT ---
@@ -635,7 +648,7 @@ if conn:
                 st.caption(f"🎓 **{title}**: {t_title}")
 
                 # =====================================================================
-                # SOCIAL MEDIA STYLE PROGRESS PILLS & STATS
+                # SOCIAL MEDIA STYLE PROGRESS PILLS & STATS (SMART ESTIMATION)
                 # =====================================================================
                 bar_data = []
                 total_mins_left = 0
