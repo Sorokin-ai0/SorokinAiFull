@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Knowledge Tree</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        /* ================================================================
+           FULL SCREEN RESET & BASE STYLES
+           ================================================================ */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        }
+
+        body {
+            background: linear-gradient(135deg, #0d1a26 0%, #1a2a3a 50%, #0f2027 100%);
+        }
+
+        /* ================================================================
+           CLOSE BUTTON - FIXED TOP RIGHT
+           ================================================================ */
+        .close-button {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 50px;
+            height: 50px;
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            color: #ffffff;
+            font-size: 24px;
+            font-weight: 300;
+            cursor: pointer;
+            z-index: 10000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .close-button:hover {
+            background: #e74c3c;
+            border-color: #e74c3c;
+            transform: scale(1.1) rotate(90deg);
+            box-shadow: 0 6px 25px rgba(231, 76, 60, 0.4);
+        }
+
+        .close-button:active {
+            transform: scale(0.95) rotate(90deg);
+        }
+
+        /* ================================================================
+           SVG CONTAINER - FULL VIEWPORT
+           ================================================================ */
+        #tree-container {
+            width: 100vw;
+            height: 100vh;
+            position: fixed;
+            top: 0;
+            left: 0;
+        }
+
+        svg {
+            width: 100%;
+            height: 100%;
+            cursor: grab;
+        }
+
+        svg:active {
+            cursor: grabbing;
+        }
+
+        /* ================================================================
+           NODE STYLES
+           ================================================================ */
+
+        /* Base node styling */
+        .node {
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+
+        .node:hover {
+            transform: scale(1.1);
+        }
+
+        /* Student (center) node */
+        .node-student circle {
+            fill: url(#studentGradient);
+            stroke: #f1c40f;
+            stroke-width: 4px;
+            filter: url(#glow-gold);
+        }
+
+        /* Subject nodes */
+        .node-subject circle {
+            stroke-width: 3px;
+            filter: url(#glow-subject);
+        }
+
+        /* Course nodes */
+        .node-course circle {
+            stroke-width: 2px;
+            opacity: 0.9;
+        }
+
+        /* Lesson nodes - various states */
+        .node-lesson circle {
+            stroke-width: 1.5px;
+            transition: all 0.4s ease;
+        }
+
+        /* LOCKED lessons - in shadow */
+        .node-lesson.locked circle {
+            fill: #1a1a2e !important;
+            stroke: #2d3748 !important;
+            filter: url(#blur-shadow);
+            opacity: 0.4;
+        }
+
+        .node-lesson.locked text {
+            fill: #4a5568 !important;
+            opacity: 0.3;
+        }
+
+        .node-lesson.locked {
+            pointer-events: none;
+        }
+
+        /* AVAILABLE lessons - soft pulse */
+        .node-lesson.available circle {
+            animation: pulse-available 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse-available {
+            0%, 100% { transform: scale(1); opacity: 0.9; }
+            50% { transform: scale(1.15); opacity: 1; }
+        }
+
+        /* IN_PROGRESS lessons - golden pulse with ring */
+        .node-lesson.in_progress circle {
+            stroke: #f1c40f !important;
+            stroke-width: 3px;
+            animation: pulse-progress 1.5s ease-in-out infinite;
+        }
+
+        @keyframes pulse-progress {
+            0%, 100% {
+                filter: drop-shadow(0 0 5px rgba(241, 196, 15, 0.6));
+                transform: scale(1);
+            }
+            50% {
+                filter: drop-shadow(0 0 15px rgba(241, 196, 15, 0.9));
+                transform: scale(1.1);
+            }
+        }
+
+        /* COMPLETED lessons - green glow */
+        .node-lesson.completed circle {
+            fill: #27ae60 !important;
+            stroke: #2ecc71 !important;
+            filter: url(#glow-complete);
+        }
+
+        .node-lesson.completed .checkmark {
+            opacity: 1;
+        }
+
+        /* MASTERED lessons - star effect */
+        .node-lesson.mastered circle {
+            fill: url(#masteryGradient) !important;
+            stroke: #ffd700 !important;
+            stroke-width: 2px;
+            filter: url(#glow-mastery);
+            animation: radiate-mastery 3s ease-in-out infinite;
+        }
+
+        @keyframes radiate-mastery {
+            0%, 100% {
+                filter: drop-shadow(0 0 8px rgba(255, 215, 0, 0.7));
+            }
+            50% {
+                filter: drop-shadow(0 0 20px rgba(255, 215, 0, 1));
+            }
+        }
+
+        /* ================================================================
+           LINK STYLES
+           ================================================================ */
+        .link {
+            fill: none;
+            stroke-opacity: 0.4;
+            transition: stroke-opacity 0.3s ease;
+        }
+
+        .link-subject {
+            stroke-width: 3px;
+            stroke-opacity: 0.6;
+        }
+
+        .link-course {
+            stroke-width: 2px;
+        }
+
+        .link-lesson {
+            stroke-width: 1.5px;
+        }
+
+        .link-locked {
+            stroke: #2d3748 !important;
+            stroke-opacity: 0.2 !important;
+            stroke-dasharray: 4 4;
+        }
+
+        /* ================================================================
+           LABELS
+           ================================================================ */
+        .node-label {
+            font-size: 12px;
+            fill: #ffffff;
+            text-anchor: middle;
+            pointer-events: none;
+            text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+        }
+
+        .node-label-large {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .node-label-student {
+            font-size: 16px;
+            font-weight: 700;
+            fill: #f1c40f;
+        }
+
+        /* ================================================================
+           TOOLTIP
+           ================================================================ */
+        .tooltip {
+            position: fixed;
+            padding: 12px 16px;
+            background: rgba(26, 42, 58, 0.95);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 12px;
+            color: #ffffff;
+            font-size: 13px;
+            pointer-events: none;
+            z-index: 9999;
+            max-width: 280px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .tooltip.visible {
+            opacity: 1;
+        }
+
+        .tooltip-title {
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 6px;
+            color: #3498db;
+        }
+
+        .tooltip-desc {
+            color: #a0aec0;
+            line-height: 1.4;
+        }
+
+        .tooltip-meta {
+            margin-top: 8px;
+            padding-top: 8px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            gap: 12px;
+            font-size: 11px;
+        }
+
+        .tooltip-xp {
+            color: #f1c40f;
+        }
+
+        .tooltip-time {
+            color: #9b59b6;
+        }
+
+        .tooltip-status {
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .tooltip-status.locked { background: #4a5568; }
+        .tooltip-status.available { background: #3498db; }
+        .tooltip-status.in_progress { background: #f39c12; }
+        .tooltip-status.completed { background: #27ae60; }
+        .tooltip-status.mastered { background: linear-gradient(45deg, #f1c40f, #e74c3c); }
+
+        /* ================================================================
+           FOG/SHADOW OVERLAY
+           ================================================================ */
+        .fog-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            pointer-events: none;
+            z-index: 5;
+            background: radial-gradient(
+                ellipse at center,
+                transparent 30%,
+                rgba(13, 26, 38, 0.3) 60%,
+                rgba(13, 26, 38, 0.7) 100%
+            );
+        }
+
+        /* ================================================================
+           USER INFO PANEL (Top Left)
+           ================================================================ */
+        .user-panel {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(26, 42, 58, 0.9);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 16px 20px;
+            color: #ffffff;
+            z-index: 1000;
+            min-width: 200px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .user-grade {
+            font-size: 12px;
+            color: #a0aec0;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 4px;
+        }
+
+        .user-level {
+            font-size: 24px;
+            font-weight: 700;
+            color: #f1c40f;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .xp-bar-container {
+            margin-top: 12px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            height: 8px;
+            overflow: hidden;
+        }
+
+        .xp-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #3498db, #9b59b6);
+            border-radius: 10px;
+            transition: width 0.5s ease;
+        }
+
+        .xp-text {
+            font-size: 11px;
+            color: #a0aec0;
+            margin-top: 6px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        /* ================================================================
+           LEGEND PANEL (Bottom Left)
+           ================================================================ */
+        .legend-panel {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: rgba(26, 42, 58, 0.9);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 16px;
+            color: #ffffff;
+            z-index: 1000;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        .legend-title {
+            font-size: 12px;
+            color: #a0aec0;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+
+        .legend-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .legend-dot.locked { background: #4a5568; filter: blur(1px); }
+        .legend-dot.available { background: #3498db; }
+        .legend-dot.in_progress { background: #f39c12; box-shadow: 0 0 8px rgba(243, 156, 18, 0.6); }
+        .legend-dot.completed { background: #27ae60; }
+        .legend-dot.mastered { background: linear-gradient(45deg, #f1c40f, #e74c3c); }
+
+        /* ================================================================
+           INSTRUCTIONS HINT (Bottom Right)
+           ================================================================ */
+        .hint-panel {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(26, 42, 58, 0.8);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 12px 16px;
+            color: #a0aec0;
+            font-size: 12px;
+            z-index: 1000;
+            display: flex;
+            gap: 20px;
+        }
+
+        .hint-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .hint-key {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-family: monospace;
+        }
+
+        /* ================================================================
+           REVEAL ANIMATION
+           ================================================================ */
+        @keyframes reveal-from-shadow {
+            0% {
+                opacity: 0;
+                filter: blur(10px);
+                transform: scale(0.8);
+            }
+            50% {
+                filter: blur(3px);
+            }
+            100% {
+                opacity: 1;
+                filter: blur(0);
+                transform: scale(1);
+            }
+        }
+
+        .revealing {
+            animation: reveal-from-shadow 0.8s ease-out forwards;
+        }
+
+        /* ================================================================
+           RESPONSIVE ADJUSTMENTS
+           ================================================================ */
+        @media (max-width: 768px) {
+            .close-button {
+                width: 44px;
+                height: 44px;
+                top: 15px;
+                right: 15px;
+                font-size: 20px;
+            }
+
+            .user-panel {
+                top: 15px;
+                left: 15px;
+                padding: 12px 16px;
+                min-width: 160px;
+            }
+
+            .user-level {
+                font-size: 20px;
+            }
+
+            .legend-panel {
+                display: none;
+            }
+
+            .hint-panel {
+                bottom: 15px;
+                right: 15px;
+                padding: 8px 12px;
+                font-size: 11px;
+            }
+
+            .tooltip {
+                max-width: 220px;
+                font-size: 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Close Button -->
+    <button class="close-button" id="closeBtn" aria-label="Close Knowledge Tree">
+        <span>&times;</span>
+    </button>
+
+    <!-- User Info Panel -->
+    <div class="user-panel">
+        <div class="user-grade" id="userGrade">9th Grade</div>
+        <div class="user-level">
+            <span id="userLevel">Level 1</span>
+        </div>
+        <div class="xp-bar-container">
+            <div class="xp-bar" id="xpBar" style="width: 0%"></div>
+        </div>
+        <div class="xp-text">
+            <span id="currentXP">0 XP</span>
+            <span id="nextLevelXP">200 XP to Level 2</span>
+        </div>
+    </div>
+
+    <!-- Legend Panel -->
+    <div class="legend-panel">
+        <div class="legend-title">Node Status</div>
+        <div class="legend-item">
+            <div class="legend-dot locked"></div>
+            <span>Locked (in shadow)</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-dot available"></div>
+            <span>Available</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-dot in_progress"></div>
+            <span>In Progress</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-dot completed"></div>
+            <span>Completed</span>
+        </div>
+        <div class="legend-item">
+            <div class="legend-dot mastered"></div>
+            <span>Mastered</span>
+        </div>
+    </div>
+
+    <!-- Controls Hint -->
+    <div class="hint-panel">
+        <div class="hint-item">
+            <span class="hint-key">Scroll</span>
+            <span>Zoom</span>
+        </div>
+        <div class="hint-item">
+            <span class="hint-key">Drag</span>
+            <span>Pan</span>
+        </div>
+        <div class="hint-item">
+            <span class="hint-key">Click</span>
+            <span>Select</span>
+        </div>
+    </div>
+
+    <!-- Fog Overlay -->
+    <div class="fog-overlay"></div>
+
+    <!-- Tooltip -->
+    <div class="tooltip" id="tooltip"></div>
+
+    <!-- Tree Container -->
+    <div id="tree-container"></div>
+
+    <script>
+        // ================================================================
+        // CONFIGURATION & DATA
+        // ================================================================
+
+        // This will be injected by Streamlit
+        const TREE_DATA = window.TREE_DATA || {
+            nodes: [],
+            links: [],
+            userInfo: {
+                grade: "9th",
+                level: 1,
+                currentXP: 0,
+                nextLevelXP: 200
+            }
+        };
+
+        const CONFIG = {
+            width: window.innerWidth,
+            height: window.innerHeight,
+            colors: {
+                math: "#3498db",
+                science: "#27ae60",
+                cs: "#9b59b6",
+                background: "#1a2a3a"
+            },
+            forces: {
+                charge: -800,
+                linkDistance: {
+                    subject: 180,
+                    course: 120,
+                    lesson: 70
+                },
+                centerStrength: 0.03
+            }
+        };
+
+        // ================================================================
+        // INITIALIZATION
+        // ================================================================
+
+        // Update user panel
+        function updateUserPanel(userInfo) {
+            document.getElementById('userGrade').textContent = `${userInfo.grade} Grade`;
+            document.getElementById('userLevel').textContent = `Level ${userInfo.level}`;
+            document.getElementById('currentXP').textContent = `${userInfo.currentXP} XP`;
+            document.getElementById('nextLevelXP').textContent = `${userInfo.nextLevelXP} XP to Level ${userInfo.level + 1}`;
+
+            const xpProgress = userInfo.nextLevelXP > 0
+                ? (userInfo.currentXP / (userInfo.currentXP + userInfo.nextLevelXP)) * 100
+                : 100;
+            document.getElementById('xpBar').style.width = `${xpProgress}%`;
+        }
+
+        // Create SVG with definitions
+        const svg = d3.select("#tree-container")
+            .append("svg")
+            .attr("width", CONFIG.width)
+            .attr("height", CONFIG.height);
+
+        // Add gradient and filter definitions
+        const defs = svg.append("defs");
+
+        // Student gradient
+        defs.append("linearGradient")
+            .attr("id", "studentGradient")
+            .attr("x1", "0%").attr("y1", "0%")
+            .attr("x2", "100%").attr("y2", "100%")
+            .selectAll("stop")
+            .data([
+                { offset: "0%", color: "#f1c40f" },
+                { offset: "100%", color: "#e67e22" }
+            ])
+            .enter().append("stop")
+            .attr("offset", d => d.offset)
+            .attr("stop-color", d => d.color);
+
+        // Mastery gradient
+        defs.append("linearGradient")
+            .attr("id", "masteryGradient")
+            .attr("x1", "0%").attr("y1", "0%")
+            .attr("x2", "100%").attr("y2", "100%")
+            .selectAll("stop")
+            .data([
+                { offset: "0%", color: "#f1c40f" },
+                { offset: "50%", color: "#e74c3c" },
+                { offset: "100%", color: "#9b59b6" }
+            ])
+            .enter().append("stop")
+            .attr("offset", d => d.offset)
+            .attr("stop-color", d => d.color);
+
+        // Glow filters
+        const createGlowFilter = (id, color, stdDev = 4) => {
+            const filter = defs.append("filter")
+                .attr("id", id)
+                .attr("x", "-50%").attr("y", "-50%")
+                .attr("width", "200%").attr("height", "200%");
+
+            filter.append("feGaussianBlur")
+                .attr("in", "SourceGraphic")
+                .attr("stdDeviation", stdDev)
+                .attr("result", "blur");
+
+            filter.append("feColorMatrix")
+                .attr("in", "blur")
+                .attr("type", "matrix")
+                .attr("values", "1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7");
+
+            filter.append("feMerge")
+                .selectAll("feMergeNode")
+                .data(["blur", "SourceGraphic"])
+                .enter().append("feMergeNode")
+                .attr("in", d => d);
+        };
+
+        createGlowFilter("glow-gold", "#f1c40f", 6);
+        createGlowFilter("glow-subject", "#3498db", 4);
+        createGlowFilter("glow-complete", "#27ae60", 5);
+        createGlowFilter("glow-mastery", "#f1c40f", 8);
+
+        // Blur/shadow filter for locked nodes
+        const blurFilter = defs.append("filter")
+            .attr("id", "blur-shadow")
+            .attr("x", "-50%").attr("y", "-50%")
+            .attr("width", "200%").attr("height", "200%");
+
+        blurFilter.append("feGaussianBlur")
+            .attr("in", "SourceGraphic")
+            .attr("stdDeviation", 3);
+
+        // Container group for zoom/pan
+        const container = svg.append("g").attr("class", "container");
+
+        // Zoom behavior
+        const zoom = d3.zoom()
+            .scaleExtent([0.3, 3])
+            .on("zoom", (event) => {
+                container.attr("transform", event.transform);
+            });
+
+        svg.call(zoom);
+
+        // Center initial view
+        svg.call(zoom.transform, d3.zoomIdentity
+            .translate(CONFIG.width / 2, CONFIG.height / 2)
+            .scale(0.8));
+
+        // ================================================================
+        // TOOLTIP
+        // ================================================================
+
+        const tooltip = d3.select("#tooltip");
+
+        function showTooltip(event, d) {
+            if (d.type === "lesson") {
+                const statusClass = d.status || "locked";
+                const statusText = {
+                    "locked": "Locked",
+                    "available": "Available",
+                    "in_progress": "In Progress",
+                    "completed": "Completed",
+                    "mastered": "Mastered"
+                }[statusClass] || "Unknown";
+
+                tooltip.html(`
+                    <div class="tooltip-title">${d.visible ? d.name : "???"}</div>
+                    <div class="tooltip-desc">${d.visible ? (d.description || "") : "Complete previous lessons to unlock"}</div>
+                    <div class="tooltip-meta">
+                        <span class="tooltip-xp">+${d.xp_value || 0} XP</span>
+                        <span class="tooltip-time">${d.estimated_minutes || 15} min</span>
+                        <span class="tooltip-status ${statusClass}">${statusText}</span>
+                    </div>
+                `);
+            } else if (d.type === "course") {
+                tooltip.html(`
+                    <div class="tooltip-title">${d.name}</div>
+                    <div class="tooltip-desc">Grade: ${d.grade_level}</div>
+                    <div class="tooltip-meta">
+                        <span>${d.completed_lessons || 0}/${d.total_lessons || 0} Lessons</span>
+                        <span>${Math.round(d.completion || 0)}% Complete</span>
+                    </div>
+                `);
+            } else if (d.type === "subject") {
+                tooltip.html(`
+                    <div class="tooltip-title">${d.name}</div>
+                    <div class="tooltip-desc">Click to explore ${d.name.toLowerCase()} courses</div>
+                `);
+            } else {
+                tooltip.html(`
+                    <div class="tooltip-title">Your Learning Journey</div>
+                    <div class="tooltip-desc">Explore subjects to begin learning!</div>
+                `);
+            }
+
+            tooltip
+                .style("left", (event.pageX + 15) + "px")
+                .style("top", (event.pageY - 10) + "px")
+                .classed("visible", true);
+        }
+
+        function hideTooltip() {
+            tooltip.classed("visible", false);
+        }
+
+        // ================================================================
+        // FORCE SIMULATION
+        // ================================================================
+
+        function getLinkDistance(link) {
+            const source = TREE_DATA.nodes.find(n => n.id === link.source.id || n.id === link.source);
+            const target = TREE_DATA.nodes.find(n => n.id === link.target.id || n.id === link.target);
+
+            if (source?.type === "student") return CONFIG.forces.linkDistance.subject;
+            if (source?.type === "subject") return CONFIG.forces.linkDistance.course;
+            return CONFIG.forces.linkDistance.lesson;
+        }
+
+        const simulation = d3.forceSimulation(TREE_DATA.nodes)
+            .force("link", d3.forceLink(TREE_DATA.links)
+                .id(d => d.id)
+                .distance(getLinkDistance)
+                .strength(d => d.strength || 0.5))
+            .force("charge", d3.forceManyBody()
+                .strength(d => {
+                    if (d.type === "student") return CONFIG.forces.charge * 2;
+                    if (d.type === "subject") return CONFIG.forces.charge * 1.5;
+                    if (d.type === "course") return CONFIG.forces.charge;
+                    return CONFIG.forces.charge * 0.5;
+                }))
+            .force("center", d3.forceCenter(0, 0).strength(CONFIG.forces.centerStrength))
+            .force("collision", d3.forceCollide().radius(d => (d.size || 10) + 10));
+
+        // ================================================================
+        // RENDER LINKS
+        // ================================================================
+
+        const links = container.append("g")
+            .attr("class", "links")
+            .selectAll("line")
+            .data(TREE_DATA.links)
+            .enter().append("line")
+            .attr("class", d => {
+                const target = TREE_DATA.nodes.find(n => n.id === (d.target.id || d.target));
+                let classes = "link";
+
+                if (target?.type === "subject") classes += " link-subject";
+                else if (target?.type === "course") classes += " link-course";
+                else classes += " link-lesson";
+
+                if (target?.type === "lesson" && !target.visible) {
+                    classes += " link-locked";
+                }
+
+                return classes;
+            })
+            .attr("stroke", d => {
+                const target = TREE_DATA.nodes.find(n => n.id === (d.target.id || d.target));
+                return target?.color || "#4a5568";
+            });
+
+        // ================================================================
+        // RENDER NODES
+        // ================================================================
+
+        const nodes = container.append("g")
+            .attr("class", "nodes")
+            .selectAll("g")
+            .data(TREE_DATA.nodes)
+            .enter().append("g")
+            .attr("class", d => {
+                let classes = `node node-${d.type}`;
+                if (d.type === "lesson") {
+                    classes += ` ${d.status || "locked"}`;
+                    if (!d.visible) classes += " locked";
+                }
+                return classes;
+            })
+            .on("mouseover", showTooltip)
+            .on("mousemove", (event, d) => {
+                tooltip
+                    .style("left", (event.pageX + 15) + "px")
+                    .style("top", (event.pageY - 10) + "px");
+            })
+            .on("mouseout", hideTooltip)
+            .on("click", handleNodeClick)
+            .call(d3.drag()
+                .on("start", dragStarted)
+                .on("drag", dragged)
+                .on("end", dragEnded));
+
+        // Add circles to nodes
+        nodes.append("circle")
+            .attr("r", d => d.size || 10)
+            .attr("fill", d => {
+                if (d.type === "student") return "url(#studentGradient)";
+                if (d.type === "lesson" && d.status === "mastered") return "url(#masteryGradient)";
+                return d.color || "#4a5568";
+            })
+            .attr("stroke", d => {
+                if (d.type === "lesson") {
+                    if (d.status === "completed") return "#2ecc71";
+                    if (d.status === "in_progress") return "#f1c40f";
+                    if (d.status === "mastered") return "#ffd700";
+                }
+                return d.color || "#4a5568";
+            });
+
+        // Add checkmark for completed lessons
+        nodes.filter(d => d.type === "lesson" && d.status === "completed")
+            .append("text")
+            .attr("class", "checkmark")
+            .attr("text-anchor", "middle")
+            .attr("dy", "0.35em")
+            .attr("font-size", "10px")
+            .attr("fill", "#ffffff")
+            .text("✓");
+
+        // Add star for mastered lessons
+        nodes.filter(d => d.type === "lesson" && d.status === "mastered")
+            .append("text")
+            .attr("class", "star")
+            .attr("text-anchor", "middle")
+            .attr("dy", "0.35em")
+            .attr("font-size", "10px")
+            .attr("fill", "#ffffff")
+            .text("★");
+
+        // Add labels
+        nodes.append("text")
+            .attr("class", d => {
+                let classes = "node-label";
+                if (d.type === "student") classes += " node-label-student";
+                else if (d.type === "subject" || d.type === "course") classes += " node-label-large";
+                return classes;
+            })
+            .attr("dy", d => (d.size || 10) + 16)
+            .text(d => {
+                if (d.type === "lesson" && !d.visible) return "???";
+                if (d.type === "lesson") {
+                    // Truncate long lesson names
+                    const name = d.name || "";
+                    return name.length > 20 ? name.substring(0, 17) + "..." : name;
+                }
+                return d.name || "";
+            });
+
+        // Add icons/emojis to subject nodes
+        nodes.filter(d => d.type === "subject")
+            .append("text")
+            .attr("text-anchor", "middle")
+            .attr("dy", "0.35em")
+            .attr("font-size", "18px")
+            .text(d => {
+                const icons = {
+                    math: "📐",
+                    science: "🔬",
+                    cs: "💻"
+                };
+                return icons[d.id] || "📚";
+            });
+
+        // Add student icon
+        nodes.filter(d => d.type === "student")
+            .append("text")
+            .attr("text-anchor", "middle")
+            .attr("dy", "0.35em")
+            .attr("font-size", "24px")
+            .text("🎓");
+
+        // ================================================================
+        // SIMULATION TICK
+        // ================================================================
+
+        simulation.on("tick", () => {
+            links
+                .attr("x1", d => d.source.x)
+                .attr("y1", d => d.source.y)
+                .attr("x2", d => d.target.x)
+                .attr("y2", d => d.target.y);
+
+            nodes.attr("transform", d => `translate(${d.x}, ${d.y})`);
+        });
+
+        // ================================================================
+        // DRAG HANDLERS
+        // ================================================================
+
+        function dragStarted(event, d) {
+            if (!event.active) simulation.alphaTarget(0.3).restart();
+            d.fx = d.x;
+            d.fy = d.y;
+        }
+
+        function dragged(event, d) {
+            d.fx = event.x;
+            d.fy = event.y;
+        }
+
+        function dragEnded(event, d) {
+            if (!event.active) simulation.alphaTarget(0);
+            d.fx = null;
+            d.fy = null;
+        }
+
+        // ================================================================
+        // CLICK HANDLERS
+        // ================================================================
+
+        function handleNodeClick(event, d) {
+            event.stopPropagation();
+            hideTooltip();
+
+            // Don't handle clicks on locked lessons
+            if (d.type === "lesson" && !d.visible) {
+                return;
+            }
+
+            // Send message to Streamlit
+            if (d.type === "lesson" && (d.status === "available" || d.status === "in_progress")) {
+                sendToStreamlit({
+                    action: "select_lesson",
+                    lesson: {
+                        id: d.id,
+                        title: d.name,
+                        description: d.description,
+                        course_id: d.course_id,
+                        course_name: d.course_name,
+                        xp_value: d.xp_value,
+                        estimated_minutes: d.estimated_minutes
+                    }
+                });
+            } else if (d.type === "course") {
+                // Focus on course (zoom to it)
+                focusOnNode(d);
+            } else if (d.type === "subject") {
+                // Focus on subject
+                focusOnNode(d);
+            }
+        }
+
+        function focusOnNode(d) {
+            const scale = 1.5;
+            svg.transition()
+                .duration(750)
+                .call(zoom.transform, d3.zoomIdentity
+                    .translate(CONFIG.width / 2 - d.x * scale, CONFIG.height / 2 - d.y * scale)
+                    .scale(scale));
+        }
+
+        // ================================================================
+        // CLOSE BUTTON HANDLER
+        // ================================================================
+
+        document.getElementById('closeBtn').addEventListener('click', () => {
+            sendToStreamlit({ action: "close" });
+        });
+
+        // ================================================================
+        // STREAMLIT COMMUNICATION
+        // ================================================================
+
+        function sendToStreamlit(data) {
+            // Method 1: Using window.parent for iframe communication
+            if (window.parent !== window) {
+                window.parent.postMessage({
+                    type: "streamlit:setComponentValue",
+                    value: data
+                }, "*");
+            }
+
+            // Method 2: Using Streamlit's component communication
+            if (window.Streamlit) {
+                window.Streamlit.setComponentValue(data);
+            }
+
+            // Method 3: Fallback - set on window for Streamlit to read
+            window.TREE_CALLBACK = data;
+
+            // Debug log
+            console.log("Knowledge Tree Event:", data);
+        }
+
+        // ================================================================
+        // RESIZE HANDLER
+        // ================================================================
+
+        window.addEventListener('resize', () => {
+            CONFIG.width = window.innerWidth;
+            CONFIG.height = window.innerHeight;
+            svg.attr("width", CONFIG.width).attr("height", CONFIG.height);
+        });
+
+        // ================================================================
+        // INITIALIZE WITH DATA
+        // ================================================================
+
+        // If data is already available, update the UI
+        if (TREE_DATA.userInfo) {
+            updateUserPanel(TREE_DATA.userInfo);
+        }
+
+        // Listen for data updates from Streamlit
+        window.addEventListener('message', (event) => {
+            if (event.data.type === 'updateTreeData') {
+                // Handle data update
+                console.log("Received tree data update:", event.data);
+            }
+        });
+
+        // Touch support for mobile
+        let touchStartTime;
+        svg.on("touchstart", function(event) {
+            touchStartTime = Date.now();
+        });
+
+        svg.on("touchend", function(event) {
+            const touchDuration = Date.now() - touchStartTime;
+            if (touchDuration < 200) {
+                // It was a tap, not a drag
+                // Handle as click
+            }
+        });
+
+        console.log("Knowledge Tree initialized with", TREE_DATA.nodes.length, "nodes");
+    </script>
+</body>
+</html>
