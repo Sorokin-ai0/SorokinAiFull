@@ -1,6 +1,8 @@
 streamlit
 mysql-connector-python
-bcrypt
 google-generativeai
+bcrypt
+pandas
+altair
 Pillow
 requests
