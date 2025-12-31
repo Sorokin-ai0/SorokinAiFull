@@ -34,6 +34,7 @@ st.set_page_config(
 # 2. THEME CONFIGURATION
 # =============================================================================
 THEMES = {
+    "Auto": {"bg": "#1a2a3a", "accent": "#f1c40f", "text": "#ffffff"},  # Defaults to Dark Ocean
     "Dark Ocean": {"bg": "#1a2a3a", "accent": "#f1c40f", "text": "#ffffff"},
     "Midnight Purple": {"bg": "#1a1a2e", "accent": "#e94560", "text": "#ffffff"},
     "Forest Green": {"bg": "#1a2e1a", "accent": "#4ecca3", "text": "#ffffff"},
@@ -42,7 +43,7 @@ THEMES = {
 }
 
 def get_theme():
-    return THEMES.get(st.session_state.get('theme', 'Dark Ocean'), THEMES['Dark Ocean'])
+    return THEMES.get(st.session_state.get('theme', 'Auto'), THEMES['Auto'])
 
 # =============================================================================
 # 3. VISITOR TRACKING
@@ -125,10 +126,33 @@ def init_db():
             completed_date TIMESTAMP NULL, quiz_score INT DEFAULT 0,
             UNIQUE(user_id, lesson_key)
         );""")
-        
+
+        cur.execute("""CREATE TABLE IF NOT EXISTS SeasonalEvents (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            event_name VARCHAR(100),
+            start_date DATE,
+            end_date DATE,
+            badge_id VARCHAR(50),
+            is_active BOOLEAN DEFAULT FALSE
+        );""")
+
         # Add columns if missing
-        for col in [("theme", "VARCHAR(50) DEFAULT 'Dark Ocean'"), ("total_xp", "INT DEFAULT 0"), ("level", "INT DEFAULT 1")]:
-            try: cur.execute(f"ALTER TABLE Users ADD COLUMN {col[0]} {col[1]};")
+        columns_to_add = [
+            ("theme", "VARCHAR(50) DEFAULT 'Auto'"),
+            ("total_xp", "INT DEFAULT 0"),
+            ("level", "INT DEFAULT 1"),
+            ("streak_count", "INT DEFAULT 0"),
+            ("last_study_date", "DATE"),
+            ("daily_goal", "INT DEFAULT 3"),
+            ("daily_lessons_completed", "INT DEFAULT 0"),
+            ("last_spin_date", "DATE"),
+            ("streak_freezes", "INT DEFAULT 0"),
+            ("pet_stage", "VARCHAR(20) DEFAULT 'egg'"),
+            ("pet_mood", "VARCHAR(20) DEFAULT 'neutral'"),
+            ("sounds_enabled", "BOOLEAN DEFAULT TRUE")
+        ]
+        for col_name, col_def in columns_to_add:
+            try: cur.execute(f"ALTER TABLE Users ADD COLUMN {col_name} {col_def};")
             except: pass
         
         conn.commit()
@@ -156,6 +180,7 @@ def award_xp(user_id, amount):
     if conn:
         cur = conn.cursor()
         cur.execute(f"USE {st.secrets['DB_NAME']};")
+        old_level = st.session_state.get('level', 1)
         cur.execute("UPDATE Users SET total_xp = total_xp + %s WHERE user_id = %s", (amount, user_id))
         cur.execute("SELECT total_xp FROM Users WHERE user_id = %s", (user_id,))
         new_xp = cur.fetchone()[0]
@@ -166,6 +191,13 @@ def award_xp(user_id, amount):
         conn.close()
         st.session_state.total_xp = new_xp
         st.session_state.level = lvl
+
+        # Play appropriate sound and update pet on level up
+        if lvl > old_level:
+            play_sound("levelup")
+            update_pet_status(user_id, lvl)
+        else:
+            play_sound("xp")
         return new_xp
     return 0
 
@@ -199,6 +231,7 @@ def award_badge(user_id, badge_id):
         conn.commit()
         cur.close()
         conn.close()
+        play_sound("badge")
         award_xp(user_id, BADGES[badge_id]['xp'])
         if 'badges' not in st.session_state: st.session_state.badges = []
         st.session_state.badges.append(badge_id)
@@ -388,7 +421,25 @@ def render_constellation(grade, progress):
     t = get_theme()
     completed = len([k for k,v in progress.items() if v == 'completed'])
     pct = int((completed / 130) * 100)
-    
+
+    # Build progress data for each course
+    course_progress = {}
+    course_map = {
+        "Algebra I": "algebra1", "Geometry": "geometry", "Algebra II": "algebra2",
+        "Pre-Calc": "precalc", "Calc I": "calc1", "Biology": "biology",
+        "Chemistry": "chemistry", "Physics": "physics", "Python": "python"
+    }
+    for display_name, course_id in course_map.items():
+        total_lessons = len(COURSE_SYLLABI.get(COURSE_ID_MAP.get(course_id, ""), []))
+        completed_count = sum(1 for i in range(1, total_lessons+1) if progress.get(f"{course_id}_L{i}") == 'completed')
+        course_progress[display_name] = {
+            "completed": completed_count,
+            "total": total_lessons,
+            "is_complete": completed_count == total_lessons and total_lessons > 0
+        }
+
+    progress_json = json.dumps(course_progress)
+
     html = f'''
     <!DOCTYPE html><html><head>
     <script src="https://d3js.org/d3.v7.min.js"></script>
@@ -399,18 +450,35 @@ def render_constellation(grade, progress):
         .legend{{position:fixed;top:10px;left:10px;background:rgba(0,0,0,0.8);border-radius:8px;padding:10px;color:white;font-size:11px;}}
         .stats{{position:fixed;bottom:10px;left:10px;background:rgba(0,0,0,0.8);border-radius:8px;padding:10px;color:white;}}
         .stats h4{{color:{t['accent']};}}
+        @keyframes pulse {{
+            0%, 100% {{ opacity: 1; r: 22; }}
+            50% {{ opacity: 0.7; r: 24; }}
+        }}
+        .completed-node {{
+            filter: drop-shadow(0 0 8px currentColor);
+            animation: pulse 2s ease-in-out infinite;
+        }}
     </style></head><body>
     <div id="c"></div>
     <div class="legend">
-        <div>🟡 You</div><div>🔵 Math</div><div>🟢 Science</div><div>🟣 CS</div><div>✅ Done</div>
+        <div>🟡 You</div><div>🔵 Math</div><div>🟢 Science</div><div>🟣 CS</div>
+        <div style="margin-top:5px">⭐ Complete</div><div>🔒 Incomplete</div>
     </div>
     <div class="stats"><h4>🎓 {grade}</h4><div>{pct}% • {completed}/130</div></div>
+    <button id="resetBtn" style="position:fixed;top:10px;right:10px;background:{t['accent']};color:#1a2a3a;border:none;padding:8px 16px;border-radius:8px;cursor:pointer;font-weight:bold;">🔄 Reset View</button>
     <script>
         const w=innerWidth,h=innerHeight;
-        const svg=d3.select("#c").append("svg");
+        const svg=d3.select("#c").append("svg").attr("width",w).attr("height",h);
         const g=svg.append("g");
-        svg.call(d3.zoom().scaleExtent([0.3,2]).on("zoom",e=>g.attr("transform",e.transform)));
-        svg.call(d3.zoom().transform,d3.zoomIdentity.translate(w/2,h/2).scale(0.7));
+        const progress={progress_json};
+        const zoom=d3.zoom()
+            .scaleExtent([0.5,2])
+            .translateExtent([[-w,-h],[w*2,h*2]])
+            .on("zoom",e=>g.attr("transform",e.transform));
+        svg.call(zoom);
+        const initialTransform=d3.zoomIdentity.translate(w/2,h/2).scale(0.7);
+        svg.call(zoom.transform,initialTransform);
+        document.getElementById('resetBtn').onclick=()=>svg.transition().duration(750).call(zoom.transform,initialTransform);
         g.append("circle").attr("cx",0).attr("cy",0).attr("r",50).attr("fill","{t['accent']}");
         g.append("text").attr("x",0).attr("y",5).attr("text-anchor","middle").attr("fill","#1a2a3a").attr("font-weight","bold").text("{grade}");
         g.append("text").attr("x",0).attr("y",-60).attr("text-anchor","middle").attr("fill","{t['accent']}").text("🎓 YOU");
@@ -428,9 +496,25 @@ def render_constellation(grade, progress):
             s.courses.forEach((c,i)=>{{
                 const ca=s.a-span/2+(span/s.courses.length)*(i+0.5);
                 const cx=sx+Math.cos(ca)*100,cy=sy+Math.sin(ca)*100;
+                const p=progress[c]||{{completed:0,total:1,is_complete:false}};
+                const isComplete=p.is_complete||p.completed>0;
+                const opacity=isComplete?1:0.3;
                 g.append("line").attr("x1",sx).attr("y1",sy).attr("x2",cx).attr("y2",cy).attr("stroke","rgba(255,255,255,0.2)");
-                g.append("circle").attr("cx",cx).attr("cy",cy).attr("r",22).attr("fill",s.c).attr("opacity",0.8);
-                g.append("text").attr("x",cx).attr("y",cy-30).attr("text-anchor","middle").attr("fill","#fff").attr("font-size","9px").text(c);
+                const node=g.append("circle")
+                    .attr("cx",cx).attr("cy",cy).attr("r",22)
+                    .attr("fill",s.c).attr("opacity",opacity)
+                    .attr("class",p.is_complete?"completed-node":"");
+                if(p.is_complete){{
+                    node.attr("filter","drop-shadow(0 0 8px "+s.c+")");
+                    setInterval(()=>{{
+                        node.transition().duration(1000).attr("r",24).attr("opacity",0.7)
+                            .transition().duration(1000).attr("r",22).attr("opacity",1);
+                    }},2000);
+                }}
+                g.append("text").attr("x",cx).attr("y",cy-30).attr("text-anchor","middle")
+                    .attr("fill","#fff").attr("font-size","9px").attr("opacity",opacity).text(c);
+                g.append("text").attr("x",cx).attr("y",cy+5).attr("text-anchor","middle")
+                    .attr("fill","#fff").attr("font-size","8px").text(p.completed+"/"+p.total);
             }});
         }});
     </script></body></html>'''
@@ -495,6 +579,7 @@ def render_quiz(quiz, lesson_key, user_id):
             score = int((correct/len(qs))*100)
             st.markdown(f"## Score: {score}%")
             xp = score//2 + (25 if score >= 80 else 0) + (25 if score == 100 else 0)
+            play_sound("quiz")
             award_xp(user_id, xp)
             st.success(f"+{xp} XP!")
             award_badge(user_id, "first_quiz")
@@ -636,7 +721,7 @@ def ask_q(q):
 def mark_done():
     ld = st.session_state.lesson_data
     key = f"{ld['cid']}_L{ld['num']}"
-    
+
     conn = get_db()
     if conn:
         cur = conn.cursor()
@@ -645,28 +730,33 @@ def mark_done():
         conn.commit()
         cur.close()
         conn.close()
-    
+
     st.session_state.progress[key] = 'completed'
+
+    # Update streak and daily goals
+    update_streak(st.session_state.user_id)
+    increment_daily_lessons(st.session_state.user_id)
+
     award_xp(st.session_state.user_id, 50)
-    
+
     done = len([k for k,v in st.session_state.progress.items() if v=='completed'])
     award_badge(st.session_state.user_id, "first_lesson")
     if done >= 5: award_badge(st.session_state.user_id, "five_lessons")
     if done >= 10: award_badge(st.session_state.user_id, "ten_lessons")
-    
+
     if ld['course'] in ['Algebra I','Geometry','Algebra II','Pre-Calculus','Calculus I']:
         award_badge(st.session_state.user_id, "math_explorer")
     elif ld['course'] in ['Biology','Chemistry','Physics']:
         award_badge(st.session_state.user_id, "science_explorer")
     elif ld['course'] == 'Intro to Python':
         award_badge(st.session_state.user_id, "code_explorer")
-    
+
     hr = datetime.now().hour
     if hr >= 22 or hr < 5: award_badge(st.session_state.user_id, "night_owl")
     if 5 <= hr < 7: award_badge(st.session_state.user_id, "early_bird")
-    
+
     st.success("🎉 +50 XP!")
-    
+
     if st.session_state.section >= 5:
         with st.spinner("Generating quiz..."):
             st.session_state.quiz_data = generate_quiz(ld['course'], ld['title'], ld['desc'])
@@ -678,7 +768,8 @@ def update_usage():
     if conn:
         cur = conn.cursor()
         cur.execute(f"USE {st.secrets['DB_NAME']};")
-        cur.execute("UPDATE Users SET flash_usage=%s WHERE user_id=%s", (st.session_state.flash_usage, st.session_state.user_id))
+        cur.execute("UPDATE Users SET flash_usage=%s, pro_usage=%s WHERE user_id=%s",
+                   (st.session_state.flash_usage, st.session_state.pro_usage, st.session_state.user_id))
         conn.commit()
         cur.close()
         conn.close()
@@ -687,10 +778,11 @@ def update_usage():
 # =============================================================================
 defaults = {
     'authenticated': False, 'user_id': None, 'grade': '9th', 'flash_usage': 0, 'pro_usage': 0,
-    'messages': [], 'session_id': None, 'theme': 'Dark Ocean', 'total_xp': 0, 'level': 1,
+    'messages': [], 'session_id': None, 'theme': 'Auto', 'total_xp': 0, 'level': 1,
     'badges': [], 'progress': {}, 'beta_mode': False, 'learning': False, 'lesson_data': None,
     'difficulty': 'Standard', 'section': 1, 'lesson_msgs': [], 'show_modal': False,
-    'show_quiz': False, 'quiz_data': None, 'pomo_count': 0
+    'show_quiz': False, 'quiz_data': None, 'pomo_count': 0, 'sounds_enabled': True,
+    'streak_count': 0, 'daily_lessons_completed': 0, 'daily_goal': 3, 'pet_stage': 'egg', 'pet_mood': 'neutral'
 }
 for k,v in defaults.items():
     if k not in st.session_state: st.session_state[k] = v
@@ -706,6 +798,230 @@ def load_user(uid):
         cur.execute("SELECT lesson_key, status FROM UserLessonProgress WHERE user_id=%s", (uid,))
         st.session_state.progress = {r['lesson_key']:r['status'] for r in cur.fetchall()}
         st.session_state.badges = get_badges(uid)
+
+        # Load streak, daily goal, and pet data
+        cur.execute("SELECT streak_count, daily_lessons_completed, daily_goal, pet_stage, pet_mood FROM Users WHERE user_id=%s", (uid,))
+        user_data = cur.fetchone()
+        if user_data:
+            st.session_state.streak_count = user_data.get('streak_count', 0) or 0
+            st.session_state.daily_lessons_completed = user_data.get('daily_lessons_completed', 0) or 0
+            st.session_state.daily_goal = user_data.get('daily_goal', 3) or 3
+            st.session_state.pet_stage = user_data.get('pet_stage', 'egg') or 'egg'
+            st.session_state.pet_mood = user_data.get('pet_mood', 'neutral') or 'neutral'
+
+        cur.close()
+        conn.close()
+
+# =============================================================================
+# 13A. SOUND EFFECTS
+# =============================================================================
+def play_sound(sound_type):
+    """Play sound effect if enabled"""
+    if not st.session_state.get('sounds_enabled', True):
+        return
+
+    # Using data URIs for simple beep sounds
+    sounds = {
+        "xp": "data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLaijcIGGa67OehUBELTKXh8LZkHAU6ktbzyn4qBSl+zPDajzsIFmO96+mjUxEKSKHe8bhkHwU4kdXzzHsrBCh7yO/fiD0IFl++7OqkVBEJSaPf8rhlHwU6k9bywHwqBCd5xvDdizwIFl296+mkUxELSKPd8LdlHwU3kdTzzHorBCd5yO/eiz0HFV3A7OmjUREMSKLd8LdlHwU3kdTyzHktBSd4yPDdiz0HFl3A7OqkURIOSKLd8LdlHwU2kNXzy3ktBSd4x/DdizsJFl286+mkUhEMSKPd8bhmHgU3kdXyy3ktBSd5yPDbiT0HFl+/7OqkUhELSKHe8LhlHwU3kdXzzHotBCh6yPDdiz0HFF2+7OqkUxEKR6Lf8bdlHwU4k9TyynotBCd5x/DdizwIFl++7OqkUhELR6Hf8bdlHgU4k9TzynwsBCh5x/DdizwHFl696+mlUhELRqLf8rZmHgU4ktXzynwsBCh5yPDciz0HFl696+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl++6+mlURELRqHf8bZmHgU4k9TyynwrBSh5x/DdizwHFl286+mlUxELRqHf8bdlHgU4ktTzynwrBSh5yPDciz0HFl696+mlUhELRqHf8bdlHgU4k9XyyXwsBCh5yO/diz0HFV696+mlUhELR6Hf8rZmHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8Q==",
+        "levelup": "data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLaijcIGGa67OehUBELTKXh8LZkHAU6ktbzyn4qBSl+zPDajzsIFmO96+mjUxEKSKHe8bhkHwU4kdXzzHsrBCh7yO/fiD0IFl++7OqkVBEJSaPf8rhlHwU6k9bywHwqBCd5xvDdizwIFl296+mkUxELSKPd8LdlHwU3kdTzzHorBCd5yO/eiz0HFV3A7OmjUREMSKLd8LdlHwU3kdTyzHktBSd4yPDdiz0HFl3A7OqkURIOSKLd8LdlHwU2kNXzy3ktBSd4x/DdizsJFl286+mkUhEMSKPd8bhmHgU3kdXyy3ktBSd5yPDbiT0HFl+/7OqkUhELSKHe8LhlHwU3kdXzzHotBCh6yPDdiz0HFF2+7OqkUxEKR6Lf8bdlHwU4k9TyynotBCd5x/DdizwIFl++7OqkUhELR6Hf8bdlHgU4k9TzynwsBCh5x/DdizwHFl696+mlUhELRqLf8rZmHgU4ktXzynwsBCh5yPDciz0HFl696+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl++6+mlURELRqHf8bZmHgU4k9TyynwrBSh5x/DdizwHFl286+mlUxELRqHf8bdlHgU4ktTzynwrBSh5yPDciz0HFl696+mlUhELRqHf8bdlHgU4k9XyyXwsBCh5yO/diz0HFV696+mlUhELR6Hf8rZmHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8Q==",
+        "badge": "data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLaijcIGGa67OehUBELTKXh8LZkHAU6ktbzyn4qBSl+zPDajzsIFmO96+mjUxEKSKHe8bhkHwU4kdXzzHsrBCh7yO/fiD0IFl++7OqkVBEJSaPf8rhlHwU6k9bywHwqBCd5xvDdizwIFl296+mkUxELSKPd8LdlHwU3kdTzzHorBCd5yO/eiz0HFV3A7OmjUREMSKLd8LdlHwU3kdTyzHktBSd4yPDdiz0HFl3A7OqkURIOSKLd8LdlHwU2kNXzy3ktBSd4x/DdizsJFl286+mkUhEMSKPd8bhmHgU3kdXyy3ktBSd5yPDbiT0HFl+/7OqkUhELSKHe8LhlHwU3kdXzzHotBCh6yPDdiz0HFF2+7OqkUxEKR6Lf8bdlHwU4k9TyynotBCd5x/DdizwIFl++7OqkUhELR6Hf8bdlHgU4k9TzynwsBCh5x/DdizwHFl696+mlUhELRqLf8rZmHgU4ktXzynwsBCh5yPDciz0HFl696+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl++6+mlURELRqHf8bZmHgU4k9TyynwrBSh5x/DdizwHFl286+mlUxELRqHf8bdlHgU4ktTzynwrBSh5yPDciz0HFl696+mlUhELRqHf8bdlHgU4k9XyyXwsBCh5yO/diz0HFV696+mlUhELR6Hf8rZmHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8Q==",
+        "quiz": "data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcBj+a2/LDciUFLIHO8tiJNwgZaLvt559NEAxQp+PwtmMcBjiR1/LMeSwFJHfH8N2QQAoUXrTp66hVFApGn+DyvmwhBSuBzvLaijcIGGa67OehUBELTKXh8LZkHAU6ktbzyn4qBSl+zPDajzsIFmO96+mjUxEKSKHe8bhkHwU4kdXzzHsrBCh7yO/fiD0IFl++7OqkVBEJSaPf8rhlHwU6k9bywHwqBCd5xvDdizwIFl296+mkUxELSKPd8LdlHwU3kdTzzHorBCd5yO/eiz0HFV3A7OmjUREMSKLd8LdlHwU3kdTyzHktBSd4yPDdiz0HFl3A7OqkURIOSKLd8LdlHwU2kNXzy3ktBSd4x/DdizsJFl286+mkUhEMSKPd8bhmHgU3kdXyy3ktBSd5yPDbiT0HFl+/7OqkUhELSKHe8LhlHwU3kdXzzHotBCh6yPDdiz0HFF2+7OqkUxEKR6Lf8bdlHwU4k9TyynotBCd5x/DdizwIFl++7OqkUhELR6Hf8bdlHgU4k9TzynwsBCh5x/DdizwHFl696+mlUhELRqLf8rZmHgU4ktXzynwsBCh5yPDciz0HFl696+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl++6+mlURELRqHf8bZmHgU4k9TyynwrBSh5x/DdizwHFl286+mlUxELRqHf8bdlHgU4ktTzynwrBSh5yPDciz0HFl696+mlUhELRqHf8bdlHgU4k9XyyXwsBCh5yO/diz0HFV696+mlUhELR6Hf8rZmHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8rZlHgU4ktXzynwrBSh5yPDciz0HFl+96+mlUhELRqHf8Q=="
+    }
+
+    sound_html = f'<audio autoplay><source src="{sounds.get(sound_type, sounds["xp"])}" type="audio/wav"></audio>'
+    components.html(sound_html, height=0)
+
+# =============================================================================
+# 13B. STREAK & DAILY GOALS
+# =============================================================================
+def update_streak(user_id):
+    """Update user's study streak"""
+    from datetime import datetime, timedelta
+    conn = get_db()
+    if conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(f"USE {st.secrets['DB_NAME']};")
+        cur.execute("SELECT streak_count, last_study_date FROM Users WHERE user_id=%s", (user_id,))
+        row = cur.fetchone()
+
+        if row:
+            today = datetime.now().date()
+            last_date = datetime.strptime(row['last_study_date'], "%Y-%m-%d").date() if row.get('last_study_date') else None
+            current_streak = row.get('streak_count', 0) or 0
+
+            if last_date:
+                days_diff = (today - last_date).days
+                if days_diff == 0:
+                    # Already studied today
+                    pass
+                elif days_diff == 1:
+                    # Consecutive day - increment streak
+                    current_streak += 1
+                    cur.execute("UPDATE Users SET streak_count=%s, last_study_date=%s WHERE user_id=%s",
+                               (current_streak, today.strftime("%Y-%m-%d"), user_id))
+
+                    # Award milestone bonuses
+                    if current_streak == 7:
+                        award_xp(user_id, 100)
+                        st.success("🔥 7 Day Streak! +100 Bonus XP!")
+                    elif current_streak == 30:
+                        award_xp(user_id, 500)
+                        st.success("🔥 30 Day Streak! +500 Bonus XP!")
+                else:
+                    # Streak broken - reset
+                    current_streak = 1
+                    cur.execute("UPDATE Users SET streak_count=1, last_study_date=%s WHERE user_id=%s",
+                               (today.strftime("%Y-%m-%d"), user_id))
+            else:
+                # First time studying
+                current_streak = 1
+                cur.execute("UPDATE Users SET streak_count=1, last_study_date=%s WHERE user_id=%s",
+                           (today.strftime("%Y-%m-%d"), user_id))
+
+            conn.commit()
+            st.session_state.streak_count = current_streak
+        cur.close()
+        conn.close()
+
+def increment_daily_lessons(user_id):
+    """Increment daily lesson count and check goal"""
+    conn = get_db()
+    if conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(f"USE {st.secrets['DB_NAME']};")
+        cur.execute("SELECT daily_lessons_completed, daily_goal FROM Users WHERE user_id=%s", (user_id,))
+        row = cur.fetchone()
+
+        if row:
+            completed = (row.get('daily_lessons_completed', 0) or 0) + 1
+            goal = row.get('daily_goal', 3) or 3
+
+            cur.execute("UPDATE Users SET daily_lessons_completed=%s WHERE user_id=%s", (completed, user_id))
+            conn.commit()
+
+            st.session_state.daily_lessons_completed = completed
+            st.session_state.daily_goal = goal
+
+            # Award bonus when goal is met
+            if completed == goal:
+                award_xp(user_id, 50)
+                st.success(f"🎯 Daily Goal Achieved! Completed {goal} lessons! +50 Bonus XP!")
+
+        cur.close()
+        conn.close()
+
+# =============================================================================
+# 13B2. STUDY PET SYSTEM
+# =============================================================================
+def update_pet_status(user_id, current_level):
+    """Update pet evolution based on level and activity"""
+    conn = get_db()
+    if conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(f"USE {st.secrets['DB_NAME']};")
+        cur.execute("SELECT pet_stage, last_study_date FROM Users WHERE user_id=%s", (user_id,))
+        row = cur.fetchone()
+
+        if row:
+            current_stage = row.get('pet_stage', 'egg')
+            last_date = row.get('last_study_date')
+
+            # Determine pet stage based on level
+            new_stage = 'egg'
+            if current_level >= 10:
+                new_stage = 'adult'
+            elif current_level >= 6:
+                new_stage = 'teen'
+            elif current_level >= 3:
+                new_stage = 'baby'
+
+            # Determine mood based on recent activity
+            today = datetime.now().date()
+            if last_date:
+                last_study = datetime.strptime(last_date, "%Y-%m-%d").date()
+                days_since = (today - last_study).days
+                mood = 'happy' if days_since == 0 else ('neutral' if days_since == 1 else 'sad')
+            else:
+                mood = 'neutral'
+
+            # Update if changed
+            if new_stage != current_stage or mood != row.get('pet_mood', 'neutral'):
+                cur.execute("UPDATE Users SET pet_stage=%s, pet_mood=%s WHERE user_id=%s",
+                           (new_stage, mood, user_id))
+                conn.commit()
+                st.session_state.pet_stage = new_stage
+                st.session_state.pet_mood = mood
+
+        cur.close()
+        conn.close()
+
+def get_pet_display():
+    """Return emoji and text for current pet state"""
+    stage = st.session_state.get('pet_stage', 'egg')
+    mood = st.session_state.get('pet_mood', 'neutral')
+
+    pets = {
+        'egg': {'emoji': '🥚', 'name': 'Mysterious Egg'},
+        'baby': {'emoji': '🐣', 'name': 'Baby Scholar'},
+        'teen': {'emoji': '🐥', 'name': 'Teen Genius'},
+        'adult': {'emoji': '🦉', 'name': 'Wise Owl'}
+    }
+
+    moods = {
+        'happy': '😊',
+        'neutral': '😐',
+        'sad': '😢'
+    }
+
+    pet = pets.get(stage, pets['egg'])
+    return f"{pet['emoji']} {moods.get(mood, '😐')}", pet['name']
+
+# =============================================================================
+# 13C. AUTO CHAT TITLES
+# =============================================================================
+def generate_chat_title(first_message):
+    """Generate a concise chat title from the first message"""
+    # Try AI summary first
+    try:
+        genai.configure(api_key=st.secrets['GEMINI_API_KEY'])
+        model = genai.GenerativeModel(MODEL_CONFIG["FLASH"])
+        prompt = f"Generate a concise 3-5 word title for a chat that starts with: '{first_message[:100]}'. Return ONLY the title, nothing else."
+        resp = model.generate_content(prompt)
+        title = resp.text.strip().replace('"', '').replace("'", "")[:50]
+        return title if title else first_message[:30]
+    except:
+        # Fallback to first 30 chars
+        return first_message[:30]
+
+def update_chat_title(session_id, title):
+    """Update the title of a chat session"""
+    conn = get_db()
+    if conn:
+        cur = conn.cursor()
+        cur.execute(f"USE {st.secrets['DB_NAME']};")
+        cur.execute("UPDATE ChatLogs SET title=%s WHERE session_id=%s", (title, session_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+
+# =============================================================================
+# 13D. CHAT MANAGEMENT
+# =============================================================================
+def delete_empty_chats(user_id, current_session_id=None):
+    """Delete all empty chats (title='New' and empty messages) for a user"""
+    conn = get_db()
+    if conn:
+        cur = conn.cursor()
+        cur.execute(f"USE {st.secrets['DB_NAME']};")
+        # Delete chats with title 'New' and empty or null messages
+        if current_session_id:
+            cur.execute("""DELETE FROM ChatLogs WHERE user_id=%s AND title='New'
+                        AND (messages='[]' OR messages IS NULL OR messages='')
+                        AND session_id=%s""", (user_id, current_session_id))
+        else:
+            cur.execute("""DELETE FROM ChatLogs WHERE user_id=%s AND title='New'
+                        AND (messages='[]' OR messages IS NULL OR messages='')""", (user_id,))
+        conn.commit()
         cur.close()
         conn.close()
 
@@ -739,7 +1055,7 @@ if not st.session_state.authenticated:
                             'authenticated': True, 'user_id': user['user_id'], 'grade': user['grade'],
                             'session_id': sid, 'flash_usage': user['flash_usage'], 'pro_usage': user['pro_usage'],
                             'total_xp': user.get('total_xp',0) or 0, 'level': user.get('level',1) or 1,
-                            'theme': user.get('theme','Dark Ocean') or 'Dark Ocean', 'beta_mode': False
+                            'theme': user.get('theme','Auto') or 'Auto', 'beta_mode': False
                         })
                         cur.execute("UPDATE Users SET session_id=%s WHERE user_id=%s", (sid,user['user_id']))
                         cur.execute("INSERT INTO ChatLogs (session_id,user_id,title,messages) VALUES (%s,%s,'New','[]')", (sid,user['user_id']))
@@ -762,7 +1078,7 @@ if not st.session_state.authenticated:
                     try:
                         h = bcrypt.hashpw(np.encode(), bcrypt.gensalt()).decode()
                         uid, sid = f"U_{uuid.uuid4().hex[:4]}", f"S_{uuid.uuid4().hex[:4]}"
-                        cur.execute("INSERT INTO Users (username,hashed_password,grade,user_id,session_id,last_active_date,total_xp,level,theme) VALUES (%s,%s,%s,%s,%s,%s,0,1,'Dark Ocean')", (nu,h,ng,uid,sid,datetime.now().strftime("%Y-%m-%d")))
+                        cur.execute("INSERT INTO Users (username,hashed_password,grade,user_id,session_id,last_active_date,total_xp,level,theme) VALUES (%s,%s,%s,%s,%s,%s,0,1,'Auto')", (nu,h,ng,uid,sid,datetime.now().strftime("%Y-%m-%d")))
                         conn.commit()
                         st.success("Created! Log in now.")
                     except: st.error("Username taken")
@@ -794,7 +1110,7 @@ if not st.session_state.authenticated:
                             'authenticated': True, 'beta_mode': True, 'user_id': user['user_id'],
                             'grade': user['grade'], 'flash_usage': user['flash_usage'], 'pro_usage': user['pro_usage'],
                             'total_xp': user.get('total_xp',0) or 0, 'level': user.get('level',1) or 1,
-                            'theme': user.get('theme','Dark Ocean') or 'Dark Ocean'
+                            'theme': user.get('theme','Auto') or 'Auto'
                         })
                         load_user(user['user_id'])
                         st.rerun()
@@ -920,9 +1236,31 @@ if st.session_state.beta_mode:
 # 18. MAIN APP (WITH CONSTELLATION)
 # =============================================================================
 lvl = get_level_info(st.session_state.total_xp)
-c1,c2 = st.columns([2,1])
+c1,c2,c3 = st.columns([2,1,1])
 with c1: st.info(f"🎓 {st.session_state.grade} Student | Sorokin AI")
 with c2: st.markdown(f"⭐ Lv.{lvl['level']} | {st.session_state.total_xp} XP")
+with c3:
+    if st.session_state.streak_count > 0:
+        st.markdown(f"🔥 {st.session_state.streak_count} day streak!")
+    else:
+        st.markdown("🔥 Start your streak!")
+
+# Daily goal progress
+daily_completed = st.session_state.get('daily_lessons_completed', 0)
+daily_goal = st.session_state.get('daily_goal', 3)
+col_a, col_b = st.columns([3, 1])
+with col_a:
+    if daily_completed < daily_goal:
+        st.progress(daily_completed / daily_goal)
+        st.caption(f"🎯 Daily Goal: {daily_completed}/{daily_goal} lessons")
+    else:
+        st.progress(1.0)
+        st.caption(f"✅ Daily Goal Complete! {daily_completed}/{daily_goal} lessons")
+with col_b:
+    # Study Pet Display
+    pet_emoji, pet_name = get_pet_display()
+    st.markdown(f"<div style='text-align:center;font-size:32px'>{pet_emoji}</div>", unsafe_allow_html=True)
+    st.caption(f"🐾 {pet_name}")
 
 st.caption(f"⚡ Flash: {100-st.session_state.flash_usage}/100 | 🧠 Ultra: {5-st.session_state.pro_usage}/5")
 
@@ -937,46 +1275,123 @@ with tabs[0]:
 
 with tabs[1]:
     st.markdown("### 💬 AI Chat")
+
+    # Chat options
+    col1, col2, col3 = st.columns([2,2,1])
+    with col1:
+        chat_model = st.selectbox("🤖 Model", ["Flash", "Ultra"],
+                                  help=f"Flash: {100-st.session_state.flash_usage}/100 | Ultra: {5-st.session_state.pro_usage}/5")
+    with col2:
+        chat_subject = st.selectbox("📚 Subject", ["General", "Math", "Science", "English", "Code", "History"])
+    with col3:
+        uploaded_image = st.file_uploader("🖼️", type=['png', 'jpg', 'jpeg'], help="Upload image for vision questions")
+
     for m in st.session_state.messages:
         with st.chat_message(m["role"]): st.markdown(m["content"])
-    
+
     msg = st.chat_input("Ask anything...")
-    if msg and st.session_state.flash_usage < 100:
-        st.session_state.messages.append({"role":"user","content":msg})
-        st.session_state.flash_usage += 1
-        update_usage()
-        try:
-            genai.configure(api_key=st.secrets['GEMINI_API_KEY'])
-            model = genai.GenerativeModel(MODEL_CONFIG["FLASH"])
-            with st.chat_message("assistant"):
-                with st.spinner("Thinking..."):
-                    resp = model.generate_content(msg)
-                    st.markdown(resp.text)
-                    st.session_state.messages.append({"role":"assistant","content":resp.text})
-            st.rerun()
-        except Exception as e: st.error(str(e))
+    if msg:
+        # Check usage limits
+        if chat_model == "Flash" and st.session_state.flash_usage >= 100:
+            st.error("⚠️ Flash daily limit reached!")
+        elif chat_model == "Ultra" and st.session_state.pro_usage >= 5:
+            st.error("⚠️ Ultra daily limit reached!")
+        else:
+            st.session_state.messages.append({"role":"user","content":msg})
+
+            # Update usage
+            if chat_model == "Flash":
+                st.session_state.flash_usage += 1
+            else:
+                st.session_state.pro_usage += 1
+            update_usage()
+
+            try:
+                genai.configure(api_key=st.secrets['GEMINI_API_KEY'])
+                model_name = MODEL_CONFIG["FLASH"] if chat_model == "Flash" else MODEL_CONFIG["ULTRA"]
+
+                # Build prompt with subject context
+                subject_context = {
+                    "Math": "You are a math tutor. Explain concepts clearly with examples.",
+                    "Science": "You are a science tutor. Use scientific reasoning and examples.",
+                    "English": "You are an English tutor. Focus on grammar, writing, and literature.",
+                    "Code": "You are a programming tutor. Provide code examples and explanations.",
+                    "History": "You are a history tutor. Provide historical context and analysis.",
+                    "General": ""
+                }
+                context = subject_context.get(chat_subject, "")
+                full_prompt = f"{context}\n\n{msg}" if context else msg
+
+                # Handle image if uploaded
+                if uploaded_image:
+                    image = Image.open(uploaded_image)
+                    model = genai.GenerativeModel(model_name)
+                    with st.chat_message("assistant"):
+                        with st.spinner("Analyzing image..."):
+                            resp = model.generate_content([full_prompt, image])
+                            st.markdown(resp.text)
+                            st.session_state.messages.append({"role":"assistant","content":resp.text})
+                else:
+                    model = genai.GenerativeModel(model_name)
+                    with st.chat_message("assistant"):
+                        with st.spinner("Thinking..."):
+                            resp = model.generate_content(full_prompt)
+                            st.markdown(resp.text)
+                            st.session_state.messages.append({"role":"assistant","content":resp.text})
+
+                # Generate title for first message
+                if len(st.session_state.messages) == 2:  # First user+assistant exchange
+                    title = generate_chat_title(msg)
+                    update_chat_title(st.session_state.session_id, title)
+
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error: {str(e)}")
 
 with tabs[2]:
     st.markdown("### 📂 Chat History")
+
+    # Show current chat messages if any
+    if st.session_state.messages:
+        st.info(f"💬 Current Chat: {len(st.session_state.messages)} messages - Switch to Chat tab to continue or select another chat below")
+        with st.expander("Preview Current Chat", expanded=False):
+            for m in st.session_state.messages[:5]:  # Show first 5 messages
+                with st.chat_message(m["role"]):
+                    st.markdown(m["content"][:200] + ("..." if len(m["content"]) > 200 else ""))
+            if len(st.session_state.messages) > 5:
+                st.caption(f"... and {len(st.session_state.messages) - 5} more messages")
+
     conn = get_db()
     if conn:
         cur = conn.cursor(dictionary=True)
         cur.execute(f"USE {st.secrets['DB_NAME']};")
-        
+
         if st.button("➕ New Chat", type="primary"):
+            # Delete current chat if it's empty
+            if len(st.session_state.messages) == 0 and st.session_state.get('session_id'):
+                delete_empty_chats(st.session_state.user_id, st.session_state.session_id)
+
             sid = f"S_{uuid.uuid4().hex[:4]}"
             st.session_state.session_id = sid
             st.session_state.messages = []
             cur.execute("UPDATE Users SET session_id=%s WHERE user_id=%s", (sid, st.session_state.user_id))
             cur.execute("INSERT INTO ChatLogs (session_id,user_id,title,messages) VALUES (%s,%s,'New','[]')", (sid, st.session_state.user_id))
             conn.commit()
+            st.success("✅ New chat created! Go to Chat tab to start.")
             st.rerun()
-        
+
         cur.execute("SELECT * FROM ChatLogs WHERE user_id=%s ORDER BY timestamp DESC LIMIT 20", (st.session_state.user_id,))
         for row in cur.fetchall():
-            if st.button(f"📄 {row['title'][:30]}", key=f"h_{row['session_id']}", use_container_width=True):
+            is_current = row['session_id'] == st.session_state.get('session_id')
+            btn_label = f"{'📌' if is_current else '📄'} {row['title'][:30]}"
+            if st.button(btn_label, key=f"h_{row['session_id']}", use_container_width=True, type="secondary" if is_current else "primary"):
+                # Delete current chat if it's empty before switching
+                if len(st.session_state.messages) == 0 and st.session_state.get('session_id'):
+                    delete_empty_chats(st.session_state.user_id, st.session_state.session_id)
+
                 st.session_state.session_id = row['session_id']
                 st.session_state.messages = json.loads(row['messages']) if row['messages'] else []
+                st.success(f"✅ Loaded chat: {row['title'][:30]} - Go to Chat tab to continue")
                 st.rerun()
         cur.close()
         conn.close()
@@ -1011,13 +1426,36 @@ with tabs[3]:
         st.rerun()
     
     st.markdown("---")
+    sounds_toggle = st.toggle("🔊 Sound Effects", value=st.session_state.get('sounds_enabled', True))
+    if sounds_toggle != st.session_state.sounds_enabled:
+        st.session_state.sounds_enabled = sounds_toggle
+        st.rerun()
+
+    st.markdown("---")
+    new_goal = st.slider("🎯 Daily Lesson Goal", min_value=1, max_value=10, value=st.session_state.get('daily_goal', 3))
+    if new_goal != st.session_state.daily_goal:
+        st.session_state.daily_goal = new_goal
+        conn = get_db()
+        if conn:
+            cur = conn.cursor()
+            cur.execute(f"USE {st.secrets['DB_NAME']};")
+            cur.execute("UPDATE Users SET daily_goal=%s WHERE user_id=%s", (new_goal, st.session_state.user_id))
+            conn.commit()
+            cur.close()
+            conn.close()
+        st.rerun()
+
+    st.markdown("---")
     st.markdown(f"**Your Stats:**")
     st.markdown(f"- Level: {lvl['level']} ({lvl['name']})")
     st.markdown(f"- Total XP: {st.session_state.total_xp}")
     st.markdown(f"- Badges: {len(st.session_state.badges)}/{len(BADGES)}")
     st.markdown(f"- Lessons Done: {len([k for k,v in st.session_state.progress.items() if v=='completed'])}")
-    
+
     st.markdown("---")
     if st.button("🚪 Log Out", use_container_width=True):
+        # Clean up empty chats before logout
+        if len(st.session_state.messages) == 0 and st.session_state.get('session_id'):
+            delete_empty_chats(st.session_state.user_id, st.session_state.session_id)
         st.session_state.authenticated = False
         st.rerun()
