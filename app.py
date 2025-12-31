@@ -10,14 +10,13 @@ import streamlit.components.v1 as components
 from datetime import datetime
 import bcrypt
 import os
-import random
 
 # =============================================================================
 # 0. MODEL CONFIGURATION
 # =============================================================================
 MODEL_CONFIG = {
-    "FLASH": "gemini-2.0-flash-exp",
-    "ULTRA": "gemini-exp-1206"
+    "FLASH": "gemini-2.0-flash",
+    "ULTRA": "gemini-1.5-pro"
 }
 
 # =============================================================================
@@ -149,7 +148,8 @@ def init_db():
             ("streak_freezes", "INT DEFAULT 0"),
             ("pet_stage", "VARCHAR(20) DEFAULT 'egg'"),
             ("pet_mood", "VARCHAR(20) DEFAULT 'neutral'"),
-            ("sounds_enabled", "BOOLEAN DEFAULT TRUE")
+            ("sounds_enabled", "BOOLEAN DEFAULT TRUE"),
+            ("pomodoros_completed", "INT DEFAULT 0")
         ]
         for col_name, col_def in columns_to_add:
             try: cur.execute(f"ALTER TABLE Users ADD COLUMN {col_name} {col_def};")
@@ -607,10 +607,27 @@ def render_pomodoro():
         if remain <= 0:
             st.session_state.pomo_active = False
             st.session_state.pomo_count += 1
+
+            # Save lifetime pomodoro count to database
+            conn = get_db()
+            if conn:
+                cur = conn.cursor()
+                cur.execute(f"USE {st.secrets['DB_NAME']};")
+                cur.execute("UPDATE Users SET pomodoros_completed = pomodoros_completed + 1 WHERE user_id=%s",
+                           (st.session_state.user_id,))
+                conn.commit()
+                cur.close()
+                conn.close()
+
             st.balloons()
+            play_sound("xp")
             award_xp(st.session_state.user_id, 25)
-            if st.session_state.pomo_count >= 5: award_badge(st.session_state.user_id, "pomodoro_5")
-            st.success("🎉 Done! +25 XP")
+
+            # Award badge after 5 total pomodoros
+            if st.session_state.pomo_count >= 5:
+                award_badge(st.session_state.user_id, "pomodoro_5")
+
+            st.success("🎉 Pomodoro Complete! +25 XP")
         if st.button("⏹️ Stop"): st.session_state.pomo_active = False; st.rerun()
         time.sleep(1); st.rerun()
     else:
@@ -864,6 +881,9 @@ def update_streak(user_id):
                     if current_streak == 7:
                         award_xp(user_id, 100)
                         st.success("🔥 7 Day Streak! +100 Bonus XP!")
+                    elif current_streak == 14:
+                        award_xp(user_id, 200)
+                        st.success("🔥 14 Day Streak! +200 Bonus XP!")
                     elif current_streak == 30:
                         award_xp(user_id, 500)
                         st.success("🔥 30 Day Streak! +500 Bonus XP!")
