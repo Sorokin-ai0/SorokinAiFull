@@ -412,10 +412,10 @@ def buy_egg(user_id, egg_type):
     if st.session_state.total_xp < cost:
         return None, "Not enough XP!"
 
-    # Check if New Year egg is still available
+    # Check if New Year egg is still available (until Jan 9, 2025 11:59 PM)
     if egg_type == 'newyear':
         from datetime import datetime
-        deadline = datetime(2025, 1, 5, 0, 0, 0)
+        deadline = datetime(2025, 1, 9, 23, 59, 59)
         if datetime.now() >= deadline:
             return None, "This egg is no longer available!"
 
@@ -1592,8 +1592,11 @@ with col_b:
 
 st.caption(f"⚡ Flash: {100-st.session_state.flash_usage}/100 | 🧠 Ultra: {5-st.session_state.pro_usage}/5")
 
-# Corner Pet Display - Fixed bottom-right
-equipped_pets_corner = get_equipped_pets(st.session_state.user_id)
+# Corner Pet Display - Fixed bottom-right (cached to avoid DB calls on every render)
+if 'equipped_pets_cache' not in st.session_state:
+    st.session_state.equipped_pets_cache = get_equipped_pets(st.session_state.user_id)
+
+equipped_pets_corner = st.session_state.equipped_pets_cache
 if equipped_pets_corner:
     rarity_colors = {
         'Common': '#9CA3AF',
@@ -1776,6 +1779,7 @@ with tabs[2]:
                     st.caption(f"{pet['rarity']} • {pet['xp_multiplier']}x")
                     if st.button(f"Unequip", key=f"unequip_{slot}"):
                         unequip_pet(st.session_state.user_id, slot)
+                        st.session_state.equipped_pets_cache = get_equipped_pets(st.session_state.user_id)
                         st.rerun()
                 else:
                     st.markdown(f"<div style='text-align:center;font-size:48px;opacity:0.3;'>📦</div>", unsafe_allow_html=True)
@@ -1787,12 +1791,13 @@ with tabs[2]:
         st.markdown("#### 🏪 Egg Shop")
         st.caption(f"💰 Your XP: **{user_xp}**")
 
-        # Define eggs
+        # Define eggs (New Year egg available until Jan 9, 2025 11:59 PM)
+        NEW_YEAR_EGG_END = datetime(2025, 1, 9, 23, 59, 59)
         eggs = [
             {'type': 'common', 'name': 'Common Egg', 'emoji': '🥚', 'cost': 50, 'desc': 'Common 70% | Uncommon 25% | Rare 5%'},
             {'type': 'premium', 'name': 'Premium Egg', 'emoji': '🪺', 'cost': 150, 'desc': 'Common 40% | Uncommon 40% | Rare 15% | Epic 5%'},
             {'type': 'legendary', 'name': 'Legendary Egg', 'emoji': '🌟', 'cost': 500, 'desc': 'Uncommon 30% | Rare 45% | Epic 20% | Legendary 5%'},
-            {'type': 'newyear', 'name': 'New Year Egg', 'emoji': '🎆', 'cost': 200, 'desc': '⭐ Limited Edition! Rare 50% | Epic 35% | Legendary 15%', 'deadline': datetime(2025, 1, 5, 0, 0, 0)}
+            {'type': 'newyear', 'name': 'New Year Egg', 'emoji': '🎆', 'cost': 200, 'desc': '⭐ Limited Edition! Rare 50% | Epic 35% | Legendary 15%', 'deadline': NEW_YEAR_EGG_END}
         ]
 
         egg_cols = st.columns(4)
@@ -1808,19 +1813,19 @@ with tabs[2]:
                 countdown_text = ""
                 if 'deadline' in egg:
                     now = datetime.now()
-                    if now > egg['deadline']:
-                        is_available = False
-                        countdown_text = "❌ Expired"
-                    else:
+                    if now < egg['deadline']:
+                        # Still available - show countdown
                         time_left = egg['deadline'] - now
                         days = time_left.days
                         hours = time_left.seconds // 3600
                         minutes = (time_left.seconds % 3600) // 60
-                        if days > 0:
-                            countdown_text = f"⏰ Leaves in: {days}d {hours}h {minutes}m"
-                        else:
-                            countdown_text = f"⏰ Leaves in: {hours}h {minutes}m"
-                        st.warning(countdown_text)
+                        countdown_text = f"⏰ Available for: {days}d {hours}h {minutes}m"
+                        st.success(countdown_text)
+                        is_available = True
+                    else:
+                        # Expired
+                        is_available = False
+                        st.error("🔴 Too Late!")
 
                 # Buy button
                 can_afford = user_xp >= egg['cost']
@@ -1830,11 +1835,10 @@ with tabs[2]:
                     st.button(f"🔒 Need {egg['cost']-user_xp} more XP", key=f"buy_{egg['type']}", disabled=True, use_container_width=True)
                 else:
                     if st.button(f"🛒 Buy ({egg['cost']} XP)", key=f"buy_{egg['type']}", use_container_width=True):
-                        # Handle egg opening with animation
+                        # Buy the egg immediately (no separate rerun needed)
                         st.session_state.opening_egg = egg['type']
-                        st.rerun()
 
-        # Egg opening animation
+        # Egg opening animation (simplified for performance)
         if 'opening_egg' in st.session_state:
             egg_type = st.session_state.opening_egg
             egg_info = next((e for e in eggs if e['type'] == egg_type), None)
@@ -1858,51 +1862,31 @@ with tabs[2]:
                     }
                     color = rarity_colors.get(new_pet['rarity'], '#9CA3AF')
 
+                    # Simplified fast animation (2 seconds total)
                     animation_html = f"""
                     <div style='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);z-index:9999;display:flex;align-items:center;justify-content:center;flex-direction:column;'>
-                        <div class='egg-shake' style='font-size:120px;animation:shake 0.5s infinite;'>
-                            {egg_info['emoji']}
-                        </div>
-                        <div class='egg-crack' style='font-size:200px;margin-top:40px;animation:reveal 2s forwards;opacity:0;'>
-                            {new_pet['emoji']}
-                        </div>
-                        <div style='color:{color};font-size:32px;font-weight:bold;margin-top:20px;animation:fadeIn 3s forwards;opacity:0;'>
-                            {new_pet['name']}
-                        </div>
-                        <div style='color:white;font-size:20px;margin-top:10px;animation:fadeIn 3.5s forwards;opacity:0;'>
-                            {new_pet['rarity']} • {new_pet['xp_multiplier']}x XP Multiplier
-                        </div>
-                        <div style='color:white;font-size:16px;margin-top:30px;animation:fadeIn 4s forwards;opacity:0;'>
-                            {new_pet['description']}
-                        </div>
+                        <div style='font-size:150px;animation:shake 0.3s 3;'>{egg_info['emoji']}</div>
+                        <div style='font-size:180px;margin-top:20px;animation:pop 0.5s 0.4s forwards;opacity:0;'>{new_pet['emoji']}</div>
+                        <div style='color:{color};font-size:28px;font-weight:bold;margin-top:15px;animation:fadeIn 0.3s 0.9s forwards;opacity:0;'>{new_pet['name']}</div>
+                        <div style='color:white;font-size:18px;margin-top:8px;animation:fadeIn 0.3s 1.2s forwards;opacity:0;'>{new_pet['rarity']} • {new_pet['xp_multiplier']}x XP</div>
                     </div>
                     <style>
-                        @keyframes shake {{
-                            0%, 100% {{ transform: rotate(0deg); }}
-                            25% {{ transform: rotate(-15deg); }}
-                            75% {{ transform: rotate(15deg); }}
-                        }}
-                        @keyframes reveal {{
-                            0% {{ opacity: 0; transform: scale(0.5); }}
-                            50% {{ opacity: 1; transform: scale(1.2); }}
-                            100% {{ opacity: 1; transform: scale(1); }}
-                        }}
-                        @keyframes fadeIn {{
-                            to {{ opacity: 1; }}
-                        }}
+                        @keyframes shake {{ 0%,100% {{ transform:rotate(0deg); }} 33% {{ transform:rotate(-10deg); }} 66% {{ transform:rotate(10deg); }} }}
+                        @keyframes pop {{ 0% {{ opacity:0; transform:scale(0.3); }} 50% {{ transform:scale(1.1); }} 100% {{ opacity:1; transform:scale(1); }} }}
+                        @keyframes fadeIn {{ to {{ opacity:1; }} }}
                     </style>
                     <script>
-                        setTimeout(() => {{
-                            window.parent.location.reload();
-                        }}, 5000);
+                        setTimeout(() => {{ window.parent.postMessage('close', '*'); }}, 2000);
                     </script>
                     """
 
                     components.html(animation_html, height=600)
 
-                    # Clear the flag after animation
+                    # Clear the flag and update cache
                     del st.session_state.opening_egg
+                    st.session_state.equipped_pets_cache = get_equipped_pets(st.session_state.user_id)
                     play_sound("levelup")
+                    st.rerun()
                 else:
                     st.error(f"Failed to open egg: {error}")
                     del st.session_state.opening_egg
@@ -1974,6 +1958,7 @@ with tabs[2]:
                             if is_equipped:
                                 if st.button("Unequip", key=f"coll_unequip_{pet['user_pet_id']}", use_container_width=True):
                                     unequip_pet(st.session_state.user_id, pet['equip_slot'])
+                                    st.session_state.equipped_pets_cache = get_equipped_pets(st.session_state.user_id)
                                     st.rerun()
                             else:
                                 # Find first available slot
@@ -1983,9 +1968,103 @@ with tabs[2]:
                                 if available_slot:
                                     if st.button(f"Equip to Slot {available_slot}", key=f"coll_equip_{pet['user_pet_id']}", use_container_width=True):
                                         equip_pet(st.session_state.user_id, pet['pet_id'], available_slot)
+                                        st.session_state.equipped_pets_cache = get_equipped_pets(st.session_state.user_id)
                                         st.rerun()
                                 else:
                                     st.caption("All slots full")
+
+        st.markdown("---")
+
+        # Section 4: Pet Library / Pokedex
+        st.markdown("#### 📚 Pet Library")
+
+        # Get all pets from database
+        cur.execute("SELECT * FROM Pets ORDER BY FIELD(rarity, 'Common', 'Uncommon', 'Rare', 'Epic', 'Legendary'), name")
+        all_pets = cur.fetchall()
+
+        # Get owned pet IDs
+        owned_pet_ids = set([p['pet_id'] for p in user_pets])
+
+        # Calculate collection progress
+        total_pets = len([p for p in all_pets if not p['is_limited']])  # Don't count limited for base collection
+        owned_count = len([p for p in user_pets if p['pet_id'] in owned_pet_ids])
+        progress_pct = int((owned_count / total_pets) * 100) if total_pets > 0 else 0
+
+        st.markdown(f"**Collection Progress: {owned_count}/{total_pets} pets ({progress_pct}%)**")
+        st.progress(owned_count / total_pets if total_pets > 0 else 0)
+        st.caption("Collect all pets to become a Pet Master!")
+
+        # Organize pets by rarity
+        rarity_colors = {
+            'Common': '#9CA3AF',
+            'Uncommon': '#10B981',
+            'Rare': '#3B82F6',
+            'Epic': '#A855F7',
+            'Legendary': '#F59E0B'
+        }
+
+        rarities = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary']
+
+        for rarity in rarities:
+            rarity_pets = [p for p in all_pets if p['rarity'] == rarity and not p['is_limited']]
+            if rarity_pets:
+                st.markdown(f"##### {rarity} Pets")
+
+                # Display pets in grid
+                cols = st.columns(6)
+                for idx, pet in enumerate(rarity_pets):
+                    with cols[idx % 6]:
+                        is_owned = pet['pet_id'] in owned_pet_ids
+                        border_color = rarity_colors.get(rarity, '#9CA3AF')
+
+                        if is_owned:
+                            # Show full color pet
+                            card_html = f"""
+                            <div style='border:2px solid {border_color};border-radius:8px;padding:12px;text-align:center;background:rgba(255,255,255,0.05);margin-bottom:8px;'>
+                                <div style='font-size:40px;'>{pet['emoji']}</div>
+                                <div style='font-size:11px;margin-top:4px;'>{pet['name']}</div>
+                                <div style='font-size:10px;color:{border_color};'>{pet['xp_multiplier']}x</div>
+                            </div>
+                            """
+                        else:
+                            # Show locked silhouette
+                            card_html = f"""
+                            <div style='border:2px solid #333;border-radius:8px;padding:12px;text-align:center;background:rgba(0,0,0,0.3);margin-bottom:8px;'>
+                                <div style='font-size:40px;filter:grayscale(100%) brightness(0.2);'>{pet['emoji']}</div>
+                                <div style='font-size:11px;margin-top:4px;color:#555;'>???</div>
+                                <div style='font-size:10px;color:#555;'>Locked</div>
+                            </div>
+                            """
+                        st.markdown(card_html, unsafe_allow_html=True)
+
+        # Limited Edition Section (New Year)
+        limited_pets = [p for p in all_pets if p['is_limited']]
+        if limited_pets:
+            st.markdown("##### ⭐ Limited Edition - New Year")
+            cols = st.columns(6)
+            for idx, pet in enumerate(limited_pets):
+                with cols[idx % 6]:
+                    is_owned = pet['pet_id'] in owned_pet_ids
+
+                    if is_owned:
+                        # Show with special animated border
+                        card_html = f"""
+                        <div style='border:2px solid #F59E0B;border-radius:8px;padding:12px;text-align:center;background:linear-gradient(45deg, rgba(251,191,36,0.1), rgba(245,158,11,0.1));margin-bottom:8px;box-shadow:0 0 10px rgba(245,158,11,0.3);'>
+                            <div style='font-size:40px;'>{pet['emoji']}</div>
+                            <div style='font-size:11px;margin-top:4px;'>{pet['name']}</div>
+                            <div style='font-size:10px;color:#F59E0B;'>{pet['rarity']} • {pet['xp_multiplier']}x</div>
+                        </div>
+                        """
+                    else:
+                        # Show locked
+                        card_html = f"""
+                        <div style='border:2px solid #333;border-radius:8px;padding:12px;text-align:center;background:rgba(0,0,0,0.3);margin-bottom:8px;'>
+                            <div style='font-size:40px;filter:grayscale(100%) brightness(0.2);'>{pet['emoji']}</div>
+                            <div style='font-size:11px;margin-top:4px;color:#555;'>???</div>
+                            <div style='font-size:10px;color:#555;'>Limited</div>
+                        </div>
+                        """
+                    st.markdown(card_html, unsafe_allow_html=True)
 
         cur.close()
         conn.close()
