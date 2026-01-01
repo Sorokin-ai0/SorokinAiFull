@@ -1857,9 +1857,8 @@ with tabs[2]:
                 pet_result, error = buy_egg(st.session_state.user_id, egg_type)
 
                 if pet_result:
-                    # Get the pet details
-                    cur.execute("SELECT * FROM Pets WHERE pet_id=%s", (pet_result['pet_id'],))
-                    new_pet = cur.fetchone()
+                    # pet_result already contains all pet details from buy_egg()
+                    new_pet = pet_result
 
                     # Animation overlay
                     rarity_colors = {
