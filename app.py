@@ -412,10 +412,10 @@ def buy_egg(user_id, egg_type):
     if st.session_state.total_xp < cost:
         return None, "Not enough XP!"
 
-    # Check if New Year egg is still available (until Jan 9, 2025 11:59 PM)
+    # Check if New Year egg is still available (4 days from Jan 1, 2026)
     if egg_type == 'newyear':
         from datetime import datetime
-        deadline = datetime(2025, 1, 9, 23, 59, 59)
+        deadline = datetime(2026, 1, 5, 23, 59, 59)
         if datetime.now() >= deadline:
             return None, "This egg is no longer available!"
 
@@ -1742,24 +1742,32 @@ with tabs[1]:
 with tabs[2]:
     st.markdown("### 🥚 Pet Collection")
 
-    # Get user's current XP and pets
-    conn = get_db()
-    if not conn:
-        st.error("Database connection failed")
-    else:
-        cur = conn.cursor(dictionary=True)
-        cur.execute(f"USE {st.secrets['DB_NAME']};")
+    # Cache user data to avoid repeated DB calls (refresh only when needed)
+    if 'pets_tab_data' not in st.session_state or st.session_state.get('refresh_pets_data', False):
+        conn = get_db()
+        if conn:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(f"USE {st.secrets['DB_NAME']};")
 
-        # Get user XP
-        cur.execute("SELECT total_xp FROM Users WHERE user_id=%s", (st.session_state.user_id,))
-        user_xp = cur.fetchone()['total_xp']
+            # Load all data in one go
+            cur.execute("SELECT total_xp FROM Users WHERE user_id=%s", (st.session_state.user_id,))
+            user_xp_data = cur.fetchone()
 
-        # Get equipped pets
-        equipped_pets = get_equipped_pets(st.session_state.user_id)
+            st.session_state.pets_tab_data = {
+                'user_xp': user_xp_data['total_xp'] if user_xp_data else 0,
+                'user_pets': get_user_pets(st.session_state.user_id),
+                'last_updated': datetime.now()
+            }
+            st.session_state.refresh_pets_data = False
+            cur.close()
+            conn.close()
+
+    # Use cached data
+    if 'pets_tab_data' in st.session_state:
+        user_xp = st.session_state.pets_tab_data['user_xp']
+        user_pets = st.session_state.pets_tab_data['user_pets']
+        equipped_pets = st.session_state.equipped_pets_cache
         total_multiplier = calculate_xp_multiplier(st.session_state.user_id)
-
-        # Get all user pets
-        user_pets = get_user_pets(st.session_state.user_id)
 
         # Section 1: Equipped Pets
         st.markdown("#### 🎯 Equipped Pets")
@@ -1780,6 +1788,7 @@ with tabs[2]:
                     if st.button(f"Unequip", key=f"unequip_{slot}"):
                         unequip_pet(st.session_state.user_id, slot)
                         st.session_state.equipped_pets_cache = get_equipped_pets(st.session_state.user_id)
+                        st.session_state.refresh_pets_data = True
                         st.rerun()
                 else:
                     st.markdown(f"<div style='text-align:center;font-size:48px;opacity:0.3;'>📦</div>", unsafe_allow_html=True)
@@ -1791,8 +1800,8 @@ with tabs[2]:
         st.markdown("#### 🏪 Egg Shop")
         st.caption(f"💰 Your XP: **{user_xp}**")
 
-        # Define eggs (New Year egg available until Jan 9, 2025 11:59 PM)
-        NEW_YEAR_EGG_END = datetime(2025, 1, 9, 23, 59, 59)
+        # Define eggs (New Year egg LIVE NOW - Expires in 4 days!)
+        NEW_YEAR_EGG_END = datetime(2026, 1, 5, 23, 59, 59)
         eggs = [
             {'type': 'common', 'name': 'Common Egg', 'emoji': '🥚', 'cost': 50, 'desc': 'Common 70% | Uncommon 25% | Rare 5%'},
             {'type': 'premium', 'name': 'Premium Egg', 'emoji': '🪺', 'cost': 150, 'desc': 'Common 40% | Uncommon 40% | Rare 15% | Epic 5%'},
@@ -1882,9 +1891,11 @@ with tabs[2]:
 
                     components.html(animation_html, height=600)
 
-                    # Clear the flag and update cache
+                    # Clear the flag and refresh all caches
                     del st.session_state.opening_egg
                     st.session_state.equipped_pets_cache = get_equipped_pets(st.session_state.user_id)
+                    st.session_state.refresh_pets_data = True  # Refresh pets tab data
+                    st.session_state.total_xp = user_xp - egg_info['cost']  # Update XP in session
                     play_sound("levelup")
                     st.rerun()
                 else:
@@ -1959,6 +1970,7 @@ with tabs[2]:
                                 if st.button("Unequip", key=f"coll_unequip_{pet['user_pet_id']}", use_container_width=True):
                                     unequip_pet(st.session_state.user_id, pet['equip_slot'])
                                     st.session_state.equipped_pets_cache = get_equipped_pets(st.session_state.user_id)
+                                    st.session_state.refresh_pets_data = True
                                     st.rerun()
                             else:
                                 # Find first available slot
@@ -1969,105 +1981,113 @@ with tabs[2]:
                                     if st.button(f"Equip to Slot {available_slot}", key=f"coll_equip_{pet['user_pet_id']}", use_container_width=True):
                                         equip_pet(st.session_state.user_id, pet['pet_id'], available_slot)
                                         st.session_state.equipped_pets_cache = get_equipped_pets(st.session_state.user_id)
+                                        st.session_state.refresh_pets_data = True
                                         st.rerun()
                                 else:
                                     st.caption("All slots full")
 
         st.markdown("---")
 
-        # Section 4: Pet Library / Pokedex
+        # Section 4: Pet Library / Pokedex (Lazy-loaded for performance)
         st.markdown("#### 📚 Pet Library")
 
-        # Get all pets from database
-        cur.execute("SELECT * FROM Pets ORDER BY FIELD(rarity, 'Common', 'Uncommon', 'Rare', 'Epic', 'Legendary'), name")
-        all_pets = cur.fetchall()
+        # Cache all pets data (only load once)
+        if 'all_pets_cache' not in st.session_state:
+            conn_lib = get_db()
+            if conn_lib:
+                cur_lib = conn_lib.cursor(dictionary=True)
+                cur_lib.execute(f"USE {st.secrets['DB_NAME']};")
+                cur_lib.execute("SELECT * FROM Pets ORDER BY FIELD(rarity, 'Common', 'Uncommon', 'Rare', 'Epic', 'Legendary'), name")
+                st.session_state.all_pets_cache = cur_lib.fetchall()
+                cur_lib.close()
+                conn_lib.close()
 
-        # Get owned pet IDs
+        all_pets = st.session_state.all_pets_cache
         owned_pet_ids = set([p['pet_id'] for p in user_pets])
 
         # Calculate collection progress
-        total_pets = len([p for p in all_pets if not p['is_limited']])  # Don't count limited for base collection
+        total_pets = len([p for p in all_pets if not p['is_limited']])
         owned_count = len([p for p in user_pets if p['pet_id'] in owned_pet_ids])
         progress_pct = int((owned_count / total_pets) * 100) if total_pets > 0 else 0
 
         st.markdown(f"**Collection Progress: {owned_count}/{total_pets} pets ({progress_pct}%)**")
         st.progress(owned_count / total_pets if total_pets > 0 else 0)
-        st.caption("Collect all pets to become a Pet Master!")
 
-        # Organize pets by rarity
-        rarity_colors = {
-            'Common': '#9CA3AF',
-            'Uncommon': '#10B981',
-            'Rare': '#3B82F6',
-            'Epic': '#A855F7',
-            'Legendary': '#F59E0B'
-        }
+        # Collapsible library to improve performance
+        with st.expander("🔍 View Full Pet Catalog", expanded=False):
+            st.caption("Click to browse all 37 pets - Collect them all to become a Pet Master!")
 
-        rarities = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary']
+            # Organize pets by rarity
+            rarity_colors = {
+                'Common': '#9CA3AF',
+                'Uncommon': '#10B981',
+                'Rare': '#3B82F6',
+                'Epic': '#A855F7',
+                'Legendary': '#F59E0B'
+            }
 
-        for rarity in rarities:
-            rarity_pets = [p for p in all_pets if p['rarity'] == rarity and not p['is_limited']]
-            if rarity_pets:
-                st.markdown(f"##### {rarity} Pets")
+            rarities = ['Common', 'Uncommon', 'Rare', 'Epic', 'Legendary']
 
-                # Display pets in grid
+            for rarity in rarities:
+                rarity_pets = [p for p in all_pets if p['rarity'] == rarity and not p['is_limited']]
+                if rarity_pets:
+                    st.markdown(f"##### {rarity} Pets")
+
+                    # Display pets in grid
+                    cols = st.columns(6)
+                    for idx, pet in enumerate(rarity_pets):
+                        with cols[idx % 6]:
+                            is_owned = pet['pet_id'] in owned_pet_ids
+                            border_color = rarity_colors.get(rarity, '#9CA3AF')
+
+                            if is_owned:
+                                # Show full color pet
+                                card_html = f"""
+                                <div style='border:2px solid {border_color};border-radius:8px;padding:12px;text-align:center;background:rgba(255,255,255,0.05);margin-bottom:8px;'>
+                                    <div style='font-size:40px;'>{pet['emoji']}</div>
+                                    <div style='font-size:11px;margin-top:4px;'>{pet['name']}</div>
+                                    <div style='font-size:10px;color:{border_color};'>{pet['xp_multiplier']}x</div>
+                                </div>
+                                """
+                            else:
+                                # Show locked silhouette
+                                card_html = f"""
+                                <div style='border:2px solid #333;border-radius:8px;padding:12px;text-align:center;background:rgba(0,0,0,0.3);margin-bottom:8px;'>
+                                    <div style='font-size:40px;filter:grayscale(100%) brightness(0.2);'>{pet['emoji']}</div>
+                                    <div style='font-size:11px;margin-top:4px;color:#555;'>???</div>
+                                    <div style='font-size:10px;color:#555;'>Locked</div>
+                                </div>
+                                """
+                            st.markdown(card_html, unsafe_allow_html=True)
+
+            # Limited Edition Section (New Year)
+            limited_pets = [p for p in all_pets if p['is_limited']]
+            if limited_pets:
+                st.markdown("##### ⭐ Limited Edition - New Year")
                 cols = st.columns(6)
-                for idx, pet in enumerate(rarity_pets):
+                for idx, pet in enumerate(limited_pets):
                     with cols[idx % 6]:
                         is_owned = pet['pet_id'] in owned_pet_ids
-                        border_color = rarity_colors.get(rarity, '#9CA3AF')
 
                         if is_owned:
-                            # Show full color pet
+                            # Show with special animated border
                             card_html = f"""
-                            <div style='border:2px solid {border_color};border-radius:8px;padding:12px;text-align:center;background:rgba(255,255,255,0.05);margin-bottom:8px;'>
+                            <div style='border:2px solid #F59E0B;border-radius:8px;padding:12px;text-align:center;background:linear-gradient(45deg, rgba(251,191,36,0.1), rgba(245,158,11,0.1));margin-bottom:8px;box-shadow:0 0 10px rgba(245,158,11,0.3);'>
                                 <div style='font-size:40px;'>{pet['emoji']}</div>
                                 <div style='font-size:11px;margin-top:4px;'>{pet['name']}</div>
-                                <div style='font-size:10px;color:{border_color};'>{pet['xp_multiplier']}x</div>
+                                <div style='font-size:10px;color:#F59E0B;'>{pet['rarity']} • {pet['xp_multiplier']}x</div>
                             </div>
                             """
                         else:
-                            # Show locked silhouette
+                            # Show locked
                             card_html = f"""
                             <div style='border:2px solid #333;border-radius:8px;padding:12px;text-align:center;background:rgba(0,0,0,0.3);margin-bottom:8px;'>
                                 <div style='font-size:40px;filter:grayscale(100%) brightness(0.2);'>{pet['emoji']}</div>
                                 <div style='font-size:11px;margin-top:4px;color:#555;'>???</div>
-                                <div style='font-size:10px;color:#555;'>Locked</div>
+                                <div style='font-size:10px;color:#555;'>Limited</div>
                             </div>
                             """
                         st.markdown(card_html, unsafe_allow_html=True)
-
-        # Limited Edition Section (New Year)
-        limited_pets = [p for p in all_pets if p['is_limited']]
-        if limited_pets:
-            st.markdown("##### ⭐ Limited Edition - New Year")
-            cols = st.columns(6)
-            for idx, pet in enumerate(limited_pets):
-                with cols[idx % 6]:
-                    is_owned = pet['pet_id'] in owned_pet_ids
-
-                    if is_owned:
-                        # Show with special animated border
-                        card_html = f"""
-                        <div style='border:2px solid #F59E0B;border-radius:8px;padding:12px;text-align:center;background:linear-gradient(45deg, rgba(251,191,36,0.1), rgba(245,158,11,0.1));margin-bottom:8px;box-shadow:0 0 10px rgba(245,158,11,0.3);'>
-                            <div style='font-size:40px;'>{pet['emoji']}</div>
-                            <div style='font-size:11px;margin-top:4px;'>{pet['name']}</div>
-                            <div style='font-size:10px;color:#F59E0B;'>{pet['rarity']} • {pet['xp_multiplier']}x</div>
-                        </div>
-                        """
-                    else:
-                        # Show locked
-                        card_html = f"""
-                        <div style='border:2px solid #333;border-radius:8px;padding:12px;text-align:center;background:rgba(0,0,0,0.3);margin-bottom:8px;'>
-                            <div style='font-size:40px;filter:grayscale(100%) brightness(0.2);'>{pet['emoji']}</div>
-                            <div style='font-size:11px;margin-top:4px;color:#555;'>???</div>
-                            <div style='font-size:10px;color:#555;'>Limited</div>
-                        </div>
-                        """
-                    st.markdown(card_html, unsafe_allow_html=True)
-
-        cur.close()
-        conn.close()
 
 with tabs[3]:
     st.markdown("### 📂 Chat History")
