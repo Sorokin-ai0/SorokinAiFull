@@ -192,6 +192,73 @@ def init_db():
         conn.close()
 init_db()
 
+def seed_pets():
+    """Seed all pets into the database"""
+    conn = get_db()
+    if conn:
+        cur = conn.cursor()
+        cur.execute(f"USE {st.secrets['DB_NAME']};")
+
+        # Check if pets already seeded
+        cur.execute("SELECT COUNT(*) FROM Pets")
+        if cur.fetchone()[0] > 0:
+            cur.close()
+            conn.close()
+            return
+
+        pets_data = [
+            # Common Pets (1.05x)
+            ('whiskers', 'Whiskers', '🐱', 'Common', 1.050, False, None, 'A friendly cat companion'),
+            ('buddy', 'Buddy', '🐶', 'Common', 1.050, False, None, 'Loyal dog friend'),
+            ('nibbles', 'Nibbles', '🐹', 'Common', 1.050, False, None, 'Energetic hamster'),
+            ('hoppy', 'Hoppy', '🐰', 'Common', 1.050, False, None, 'Bouncy bunny'),
+            ('shelly', 'Shelly', '🐢', 'Common', 1.050, False, None, 'Wise turtle'),
+            ('bubbles', 'Bubbles', '🐟', 'Common', 1.050, False, None, 'Cheerful fish'),
+
+            # Uncommon Pets (1.10x)
+            ('ember', 'Ember', '🦊', 'Uncommon', 1.100, False, None, 'Clever fox with fiery spirit'),
+            ('hoot', 'Hoot', '🦉', 'Uncommon', 1.100, False, None, 'Wise night owl'),
+            ('scales', 'Scales', '🦎', 'Uncommon', 1.100, False, None, 'Agile lizard'),
+            ('bamboo', 'Bamboo', '🐼', 'Uncommon', 1.100, False, None, 'Peaceful panda'),
+            ('spike', 'Spike', '🦔', 'Uncommon', 1.100, False, None, 'Spiky hedgehog'),
+            ('eucaly', 'Eucaly', '🐨', 'Uncommon', 1.100, False, None, 'Sleepy koala'),
+
+            # Rare Pets (1.20x)
+            ('leo', 'Leo', '🦁', 'Rare', 1.200, False, None, 'Majestic lion'),
+            ('shadow', 'Shadow', '🐺', 'Rare', 1.200, False, None, 'Mysterious wolf'),
+            ('storm', 'Storm', '🦅', 'Rare', 1.200, False, None, 'Soaring eagle'),
+            ('wave', 'Wave', '🐬', 'Rare', 1.200, False, None, 'Playful dolphin'),
+            ('coral', 'Coral', '🦩', 'Rare', 1.200, False, None, 'Elegant flamingo'),
+            ('flutter', 'Flutter', '🦋', 'Rare', 1.200, False, None, 'Graceful butterfly'),
+
+            # Epic Pets (1.35x)
+            ('sparkle', 'Sparkle', '🦄', 'Epic', 1.350, False, None, 'Magical unicorn'),
+            ('blaze', 'Blaze', '🐉', 'Epic', 1.350, False, None, 'Fierce dragon'),
+            ('prism', 'Prism', '🦚', 'Epic', 1.350, False, None, 'Dazzling peacock'),
+            ('ink', 'Ink', '🐙', 'Epic', 1.350, False, None, 'Intelligent octopus'),
+            ('fang', 'Fang', '🦈', 'Epic', 1.350, False, None, 'Fearsome shark'),
+
+            # Legendary Pets (1.50x)
+            ('celeste', 'Celeste', '🌟', 'Legendary', 1.500, False, None, 'Celestial star spirit'),
+            ('phoenix', 'Phoenix', '🔥', 'Legendary', 1.500, False, None, 'Immortal fire bird'),
+            ('frost', 'Frost', '❄️', 'Legendary', 1.500, False, None, 'Eternal ice dragon'),
+            ('thunder', 'Thunder', '⚡', 'Legendary', 1.500, False, None, 'Storm beast'),
+            ('aurora', 'Aurora', '🌈', 'Legendary', 1.500, False, None, 'Rainbow serpent'),
+
+            # New Year Limited Pets
+            ('sparkler', 'Sparkler', '🎆', 'Rare', 1.200, True, '2025-01-05 00:00:00', 'New Year firework creature'),
+            ('confetti', 'Confetti', '🎊', 'Epic', 1.350, True, '2025-01-05 00:00:00', 'Party spirit'),
+            ('midnight', 'Midnight', '🎇', 'Legendary', 1.500, True, '2025-01-05 00:00:00', 'Clock guardian'),
+        ]
+
+        cur.executemany("""INSERT INTO Pets (pet_id, name, emoji, rarity, xp_multiplier, is_limited, limited_until, description)
+                          VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""", pets_data)
+        conn.commit()
+        cur.close()
+        conn.close()
+
+seed_pets()
+
 # =============================================================================
 # 6. XP & LEVELING SYSTEM
 # =============================================================================
@@ -208,6 +275,11 @@ def get_level_info(xp):
     return {"level": level, "name": LEVEL_NAMES[min(level-1, len(LEVEL_NAMES)-1)], "xp": xp, "progress": progress, "needed": max(0, next_th - xp)}
 
 def award_xp(user_id, amount):
+    # Apply pet XP multiplier
+    multiplier = calculate_xp_multiplier(user_id)
+    base_amount = amount
+    amount = int(amount * multiplier)
+
     conn = get_db()
     if conn:
         cur = conn.cursor()
@@ -223,6 +295,11 @@ def award_xp(user_id, amount):
         conn.close()
         st.session_state.total_xp = new_xp
         st.session_state.level = lvl
+
+        # Show multiplier bonus if applicable
+        if multiplier > 1.0:
+            bonus_text = f"+{base_amount} XP (×{multiplier:.2f} from pets = {amount} XP)"
+            st.info(bonus_text)
 
         # Play appropriate sound and update pet on level up
         if lvl > old_level:
@@ -281,6 +358,174 @@ def get_badges(user_id):
         cur.close()
         conn.close()
     return badges
+
+# =============================================================================
+# 7B. PET COLLECTION SYSTEM
+# =============================================================================
+def open_egg(egg_type):
+    """Roll for a random pet based on egg type probabilities"""
+    import random
+
+    probabilities = {
+        'common': {'Common': 70, 'Uncommon': 25, 'Rare': 5},
+        'premium': {'Common': 40, 'Uncommon': 40, 'Rare': 15, 'Epic': 5},
+        'legendary': {'Uncommon': 30, 'Rare': 45, 'Epic': 20, 'Legendary': 5},
+        'newyear': {'Rare': 50, 'Epic': 35, 'Legendary': 15}
+    }
+
+    probs = probabilities.get(egg_type, probabilities['common'])
+    roll = random.randint(1, 100)
+
+    cumulative = 0
+    selected_rarity = 'Common'
+    for rarity, chance in probs.items():
+        cumulative += chance
+        if roll <= cumulative:
+            selected_rarity = rarity
+            break
+
+    # Get all pets of the selected rarity
+    conn = get_db()
+    if conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(f"USE {st.secrets['DB_NAME']};")
+
+        if egg_type == 'newyear':
+            cur.execute("SELECT * FROM Pets WHERE rarity=%s AND is_limited=TRUE", (selected_rarity,))
+        else:
+            cur.execute("SELECT * FROM Pets WHERE rarity=%s AND is_limited=FALSE", (selected_rarity,))
+
+        pets = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        if pets:
+            return random.choice(pets)
+    return None
+
+def buy_egg(user_id, egg_type):
+    """Purchase an egg and return the received pet"""
+    egg_costs = {'common': 50, 'premium': 150, 'legendary': 500, 'newyear': 200}
+    cost = egg_costs.get(egg_type, 50)
+
+    # Check if user has enough XP
+    if st.session_state.total_xp < cost:
+        return None, "Not enough XP!"
+
+    # Check if New Year egg is still available
+    if egg_type == 'newyear':
+        from datetime import datetime
+        deadline = datetime(2025, 1, 5, 0, 0, 0)
+        if datetime.now() >= deadline:
+            return None, "This egg is no longer available!"
+
+    # Open egg to get pet
+    pet = open_egg(egg_type)
+    if not pet:
+        return None, "No pets available!"
+
+    # Deduct XP
+    conn = get_db()
+    if conn:
+        cur = conn.cursor()
+        cur.execute(f"USE {st.secrets['DB_NAME']};")
+        cur.execute("UPDATE Users SET total_xp = total_xp - %s WHERE user_id=%s", (cost, user_id))
+
+        # Add pet to user's collection
+        cur.execute("INSERT INTO UserPets (user_id, pet_id) VALUES (%s, %s)", (user_id, pet['pet_id']))
+
+        # Record purchase
+        cur.execute("INSERT INTO UserEggPurchases (user_id, egg_type, pet_received) VALUES (%s, %s, %s)",
+                   (user_id, egg_type, pet['pet_id']))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        st.session_state.total_xp -= cost
+        return pet, None
+
+    return None, "Database error!"
+
+def get_user_pets(user_id):
+    """Get all pets owned by user"""
+    conn = get_db()
+    pets = []
+    if conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(f"USE {st.secrets['DB_NAME']};")
+        cur.execute("""SELECT p.*, up.id as user_pet_id, up.is_equipped, up.equip_slot, up.acquired_date
+                      FROM UserPets up
+                      JOIN Pets p ON up.pet_id = p.pet_id
+                      WHERE up.user_id = %s
+                      ORDER BY p.rarity DESC, p.name""", (user_id,))
+        pets = cur.fetchall()
+        cur.close()
+        conn.close()
+    return pets
+
+def get_equipped_pets(user_id):
+    """Get currently equipped pets"""
+    conn = get_db()
+    pets = []
+    if conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(f"USE {st.secrets['DB_NAME']};")
+        cur.execute("""SELECT p.*, up.equip_slot
+                      FROM UserPets up
+                      JOIN Pets p ON up.pet_id = p.pet_id
+                      WHERE up.user_id = %s AND up.is_equipped = TRUE
+                      ORDER BY up.equip_slot""", (user_id,))
+        pets = cur.fetchall()
+        cur.close()
+        conn.close()
+    return pets
+
+def equip_pet(user_id, pet_id, slot):
+    """Equip a pet to a specific slot (1-3)"""
+    if slot not in [1, 2, 3]:
+        return False
+
+    conn = get_db()
+    if conn:
+        cur = conn.cursor()
+        cur.execute(f"USE {st.secrets['DB_NAME']};")
+
+        # Unequip any pet in that slot
+        cur.execute("UPDATE UserPets SET is_equipped=FALSE, equip_slot=NULL WHERE user_id=%s AND equip_slot=%s", (user_id, slot))
+
+        # Equip the new pet
+        cur.execute("UPDATE UserPets SET is_equipped=TRUE, equip_slot=%s WHERE user_id=%s AND pet_id=%s",
+                   (slot, user_id, pet_id))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    return False
+
+def unequip_pet(user_id, slot):
+    """Unequip pet from a slot"""
+    conn = get_db()
+    if conn:
+        cur = conn.cursor()
+        cur.execute(f"USE {st.secrets['DB_NAME']};")
+        cur.execute("UPDATE UserPets SET is_equipped=FALSE, equip_slot=NULL WHERE user_id=%s AND equip_slot=%s",
+                   (user_id, slot))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return True
+    return False
+
+def calculate_xp_multiplier(user_id):
+    """Calculate total XP multiplier from equipped pets"""
+    pets = get_equipped_pets(user_id)
+    multiplier = 1.0
+    for pet in pets:
+        multiplier *= float(pet['xp_multiplier'])
+    return multiplier
+
 # =============================================================================
 # 8. COURSE DATA
 # =============================================================================
@@ -1347,7 +1592,67 @@ with col_b:
 
 st.caption(f"⚡ Flash: {100-st.session_state.flash_usage}/100 | 🧠 Ultra: {5-st.session_state.pro_usage}/5")
 
-tabs = st.tabs(["🌌 Learn", "💬 Chat", "📂 History", "⚙️ Settings"])
+# Corner Pet Display - Fixed bottom-right
+equipped_pets_corner = get_equipped_pets(st.session_state.user_id)
+if equipped_pets_corner:
+    rarity_colors = {
+        'Common': '#9CA3AF',
+        'Uncommon': '#10B981',
+        'Rare': '#3B82F6',
+        'Epic': '#A855F7',
+        'Legendary': '#F59E0B'
+    }
+
+    pets_html = ""
+    for idx, pet in enumerate(equipped_pets_corner):
+        color = rarity_colors.get(pet['rarity'], '#9CA3AF')
+        glow = f"0 0 10px {color}, 0 0 20px {color}" if pet['rarity'] in ['Epic', 'Legendary'] else f"0 0 5px {color}"
+
+        pets_html += f"""
+        <div style='
+            margin-bottom: 8px;
+            font-size: 48px;
+            filter: drop-shadow({glow});
+            animation: float{idx} 3s ease-in-out infinite;
+            cursor: pointer;
+        ' title='{pet["name"]} - {pet["rarity"]} ({pet["xp_multiplier"]}x XP)'>
+            {pet['emoji']}
+        </div>
+        """
+
+    corner_display_html = f"""
+    <div style='
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        z-index: 1000;
+        background: rgba(0, 0, 0, 0.7);
+        padding: 12px;
+        border-radius: 12px;
+        border: 2px solid rgba(255, 255, 255, 0.2);
+        backdrop-filter: blur(10px);
+    '>
+        {pets_html}
+    </div>
+    <style>
+        @keyframes float0 {{
+            0%, 100% {{ transform: translateY(0px); }}
+            50% {{ transform: translateY(-10px); }}
+        }}
+        @keyframes float1 {{
+            0%, 100% {{ transform: translateY(0px); }}
+            50% {{ transform: translateY(-8px); }}
+        }}
+        @keyframes float2 {{
+            0%, 100% {{ transform: translateY(0px); }}
+            50% {{ transform: translateY(-12px); }}
+        }}
+    </style>
+    """
+
+    components.html(corner_display_html, height=0)
+
+tabs = st.tabs(["🌌 Learn", "💬 Chat", "🥚 Pets", "📂 History", "⚙️ Settings"])
 
 with tabs[0]:
     st.markdown("### 🌌 Learning Constellation")
@@ -1432,6 +1737,260 @@ with tabs[1]:
                 st.error(f"Error: {str(e)}")
 
 with tabs[2]:
+    st.markdown("### 🥚 Pet Collection")
+
+    # Get user's current XP and pets
+    conn = get_db()
+    if not conn:
+        st.error("Database connection failed")
+    else:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(f"USE {st.secrets['DB_NAME']};")
+
+        # Get user XP
+        cur.execute("SELECT total_xp FROM Users WHERE user_id=%s", (st.session_state.user_id,))
+        user_xp = cur.fetchone()['total_xp']
+
+        # Get equipped pets
+        equipped_pets = get_equipped_pets(st.session_state.user_id)
+        total_multiplier = calculate_xp_multiplier(st.session_state.user_id)
+
+        # Get all user pets
+        user_pets = get_user_pets(st.session_state.user_id)
+
+        # Section 1: Equipped Pets
+        st.markdown("#### 🎯 Equipped Pets")
+        if total_multiplier > 1.0:
+            st.success(f"✨ Total XP Multiplier: **{total_multiplier:.2f}x**")
+        else:
+            st.info("No pets equipped - Equip up to 3 pets to boost your XP!")
+
+        eq_cols = st.columns(3)
+        for slot in range(1, 4):
+            with eq_cols[slot-1]:
+                equipped_in_slot = [p for p in equipped_pets if p['equip_slot'] == slot]
+                if equipped_in_slot:
+                    pet = equipped_in_slot[0]
+                    st.markdown(f"<div style='text-align:center;font-size:48px;'>{pet['emoji']}</div>", unsafe_allow_html=True)
+                    st.caption(f"**{pet['name']}**")
+                    st.caption(f"{pet['rarity']} • {pet['xp_multiplier']}x")
+                    if st.button(f"Unequip", key=f"unequip_{slot}"):
+                        unequip_pet(st.session_state.user_id, slot)
+                        st.rerun()
+                else:
+                    st.markdown(f"<div style='text-align:center;font-size:48px;opacity:0.3;'>📦</div>", unsafe_allow_html=True)
+                    st.caption(f"Slot {slot} Empty")
+
+        st.markdown("---")
+
+        # Section 2: Egg Shop
+        st.markdown("#### 🏪 Egg Shop")
+        st.caption(f"💰 Your XP: **{user_xp}**")
+
+        # Define eggs
+        eggs = [
+            {'type': 'common', 'name': 'Common Egg', 'emoji': '🥚', 'cost': 50, 'desc': 'Common 70% | Uncommon 25% | Rare 5%'},
+            {'type': 'premium', 'name': 'Premium Egg', 'emoji': '🪺', 'cost': 150, 'desc': 'Common 40% | Uncommon 40% | Rare 15% | Epic 5%'},
+            {'type': 'legendary', 'name': 'Legendary Egg', 'emoji': '🌟', 'cost': 500, 'desc': 'Uncommon 30% | Rare 45% | Epic 20% | Legendary 5%'},
+            {'type': 'newyear', 'name': 'New Year Egg', 'emoji': '🎆', 'cost': 200, 'desc': '⭐ Limited Edition! Rare 50% | Epic 35% | Legendary 15%', 'deadline': datetime(2025, 1, 5, 0, 0, 0)}
+        ]
+
+        egg_cols = st.columns(4)
+        for idx, egg in enumerate(eggs):
+            with egg_cols[idx]:
+                st.markdown(f"<div style='text-align:center;font-size:64px;'>{egg['emoji']}</div>", unsafe_allow_html=True)
+                st.markdown(f"**{egg['name']}**")
+                st.caption(egg['desc'])
+                st.markdown(f"**Cost:** {egg['cost']} XP")
+
+                # Check if egg is available (seasonal check)
+                is_available = True
+                countdown_text = ""
+                if 'deadline' in egg:
+                    now = datetime.now()
+                    if now > egg['deadline']:
+                        is_available = False
+                        countdown_text = "❌ Expired"
+                    else:
+                        time_left = egg['deadline'] - now
+                        days = time_left.days
+                        hours = time_left.seconds // 3600
+                        minutes = (time_left.seconds % 3600) // 60
+                        if days > 0:
+                            countdown_text = f"⏰ Leaves in: {days}d {hours}h {minutes}m"
+                        else:
+                            countdown_text = f"⏰ Leaves in: {hours}h {minutes}m"
+                        st.warning(countdown_text)
+
+                # Buy button
+                can_afford = user_xp >= egg['cost']
+                if not is_available:
+                    st.button(f"❌ Unavailable", key=f"buy_{egg['type']}", disabled=True, use_container_width=True)
+                elif not can_afford:
+                    st.button(f"🔒 Need {egg['cost']-user_xp} more XP", key=f"buy_{egg['type']}", disabled=True, use_container_width=True)
+                else:
+                    if st.button(f"🛒 Buy ({egg['cost']} XP)", key=f"buy_{egg['type']}", use_container_width=True):
+                        # Handle egg opening with animation
+                        st.session_state.opening_egg = egg['type']
+                        st.rerun()
+
+        # Egg opening animation
+        if 'opening_egg' in st.session_state:
+            egg_type = st.session_state.opening_egg
+            egg_info = next((e for e in eggs if e['type'] == egg_type), None)
+
+            if egg_info:
+                # Buy the egg and get the pet
+                pet_result, error = buy_egg(st.session_state.user_id, egg_type)
+
+                if pet_result:
+                    # Get the pet details
+                    cur.execute("SELECT * FROM Pets WHERE pet_id=%s", (pet_result['pet_id'],))
+                    new_pet = cur.fetchone()
+
+                    # Animation overlay
+                    rarity_colors = {
+                        'Common': '#9CA3AF',
+                        'Uncommon': '#10B981',
+                        'Rare': '#3B82F6',
+                        'Epic': '#A855F7',
+                        'Legendary': '#F59E0B'
+                    }
+                    color = rarity_colors.get(new_pet['rarity'], '#9CA3AF')
+
+                    animation_html = f"""
+                    <div style='position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);z-index:9999;display:flex;align-items:center;justify-content:center;flex-direction:column;'>
+                        <div class='egg-shake' style='font-size:120px;animation:shake 0.5s infinite;'>
+                            {egg_info['emoji']}
+                        </div>
+                        <div class='egg-crack' style='font-size:200px;margin-top:40px;animation:reveal 2s forwards;opacity:0;'>
+                            {new_pet['emoji']}
+                        </div>
+                        <div style='color:{color};font-size:32px;font-weight:bold;margin-top:20px;animation:fadeIn 3s forwards;opacity:0;'>
+                            {new_pet['name']}
+                        </div>
+                        <div style='color:white;font-size:20px;margin-top:10px;animation:fadeIn 3.5s forwards;opacity:0;'>
+                            {new_pet['rarity']} • {new_pet['xp_multiplier']}x XP Multiplier
+                        </div>
+                        <div style='color:white;font-size:16px;margin-top:30px;animation:fadeIn 4s forwards;opacity:0;'>
+                            {new_pet['description']}
+                        </div>
+                    </div>
+                    <style>
+                        @keyframes shake {{
+                            0%, 100% {{ transform: rotate(0deg); }}
+                            25% {{ transform: rotate(-15deg); }}
+                            75% {{ transform: rotate(15deg); }}
+                        }}
+                        @keyframes reveal {{
+                            0% {{ opacity: 0; transform: scale(0.5); }}
+                            50% {{ opacity: 1; transform: scale(1.2); }}
+                            100% {{ opacity: 1; transform: scale(1); }}
+                        }}
+                        @keyframes fadeIn {{
+                            to {{ opacity: 1; }}
+                        }}
+                    </style>
+                    <script>
+                        setTimeout(() => {{
+                            window.parent.location.reload();
+                        }}, 5000);
+                    </script>
+                    """
+
+                    components.html(animation_html, height=600)
+
+                    # Clear the flag after animation
+                    del st.session_state.opening_egg
+                    play_sound("levelup")
+                else:
+                    st.error(f"Failed to open egg: {error}")
+                    del st.session_state.opening_egg
+                    st.rerun()
+
+        st.markdown("---")
+
+        # Section 3: My Collection
+        st.markdown("#### 📚 My Collection")
+
+        if not user_pets:
+            st.info("🥚 You don't have any pets yet! Buy eggs from the shop above to start your collection.")
+        else:
+            # Filter and sort controls
+            filter_col, sort_col = st.columns(2)
+            with filter_col:
+                rarity_filter = st.selectbox("Filter by Rarity", ["All", "Common", "Uncommon", "Rare", "Epic", "Legendary"])
+            with sort_col:
+                sort_by = st.selectbox("Sort by", ["Rarity", "Name", "Recently Acquired"])
+
+            # Apply filters
+            filtered_pets = user_pets
+            if rarity_filter != "All":
+                filtered_pets = [p for p in filtered_pets if p['rarity'] == rarity_filter]
+
+            # Apply sorting
+            if sort_by == "Rarity":
+                rarity_order = {'Common': 1, 'Uncommon': 2, 'Rare': 3, 'Epic': 4, 'Legendary': 5}
+                filtered_pets = sorted(filtered_pets, key=lambda x: (rarity_order.get(x['rarity'], 0), x['name']))
+            elif sort_by == "Name":
+                filtered_pets = sorted(filtered_pets, key=lambda x: x['name'])
+            elif sort_by == "Recently Acquired":
+                filtered_pets = sorted(filtered_pets, key=lambda x: x['acquired_date'], reverse=True)
+
+            st.caption(f"Showing {len(filtered_pets)} of {len(user_pets)} pets")
+
+            # Display pets in grid
+            rarity_colors = {
+                'Common': '#9CA3AF',
+                'Uncommon': '#10B981',
+                'Rare': '#3B82F6',
+                'Epic': '#A855F7',
+                'Legendary': '#F59E0B'
+            }
+
+            cols_per_row = 4
+            for i in range(0, len(filtered_pets), cols_per_row):
+                cols = st.columns(cols_per_row)
+                for j in range(cols_per_row):
+                    if i + j < len(filtered_pets):
+                        pet = filtered_pets[i + j]
+                        with cols[j]:
+                            border_color = rarity_colors.get(pet['rarity'], '#9CA3AF')
+                            is_equipped = pet['is_equipped']
+
+                            # Pet card
+                            card_html = f"""
+                            <div style='border:3px solid {border_color};border-radius:12px;padding:16px;text-align:center;background:rgba(255,255,255,0.05);'>
+                                <div style='font-size:56px;'>{pet['emoji']}</div>
+                                <div style='font-weight:bold;margin-top:8px;'>{pet['name']}</div>
+                                <div style='color:{border_color};font-size:12px;'>{pet['rarity']}</div>
+                                <div style='font-size:14px;margin-top:4px;'>{pet['xp_multiplier']}x XP</div>
+                                {'<div style="color:#10B981;font-size:12px;margin-top:4px;">✓ Equipped</div>' if is_equipped else ''}
+                            </div>
+                            """
+                            st.markdown(card_html, unsafe_allow_html=True)
+
+                            # Equip/Unequip button
+                            if is_equipped:
+                                if st.button("Unequip", key=f"coll_unequip_{pet['user_pet_id']}", use_container_width=True):
+                                    unequip_pet(st.session_state.user_id, pet['equip_slot'])
+                                    st.rerun()
+                            else:
+                                # Find first available slot
+                                occupied_slots = [p['equip_slot'] for p in equipped_pets if p['equip_slot']]
+                                available_slot = next((s for s in [1, 2, 3] if s not in occupied_slots), None)
+
+                                if available_slot:
+                                    if st.button(f"Equip to Slot {available_slot}", key=f"coll_equip_{pet['user_pet_id']}", use_container_width=True):
+                                        equip_pet(st.session_state.user_id, pet['pet_id'], available_slot)
+                                        st.rerun()
+                                else:
+                                    st.caption("All slots full")
+
+        cur.close()
+        conn.close()
+
+with tabs[3]:
     st.markdown("### 📂 Chat History")
 
     # Show current chat messages if any
@@ -1479,7 +2038,7 @@ with tabs[2]:
         cur.close()
         conn.close()
 
-with tabs[3]:
+with tabs[4]:
     st.markdown("### ⚙️ Settings")
     
     new_grade = st.selectbox("Grade Level", GRADES, index=GRADES.index(st.session_state.grade))
