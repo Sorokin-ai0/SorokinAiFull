@@ -16,7 +16,7 @@ import os
 # =============================================================================
 MODEL_CONFIG = {
     "FLASH": "gemini-2.0-flash",
-    "ULTRA": "gemini-1.5-pro"
+    "ULTRA": "gemini-2.0-pro"
 }
 
 # =============================================================================
@@ -133,6 +133,38 @@ def init_db():
             end_date DATE,
             badge_id VARCHAR(50),
             is_active BOOLEAN DEFAULT FALSE
+        );""")
+
+        cur.execute("""CREATE TABLE IF NOT EXISTS Pets (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            pet_id VARCHAR(50) UNIQUE NOT NULL,
+            name VARCHAR(100) NOT NULL,
+            emoji VARCHAR(10) NOT NULL,
+            rarity VARCHAR(20) NOT NULL,
+            xp_multiplier DECIMAL(4,3) NOT NULL,
+            is_limited BOOLEAN DEFAULT FALSE,
+            limited_until DATETIME NULL,
+            description TEXT
+        );""")
+
+        cur.execute("""CREATE TABLE IF NOT EXISTS UserPets (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id VARCHAR(255) NOT NULL,
+            pet_id VARCHAR(50) NOT NULL,
+            acquired_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            is_equipped BOOLEAN DEFAULT FALSE,
+            equip_slot INT NULL,
+            INDEX idx_user_pets (user_id),
+            INDEX idx_equipped (user_id, is_equipped)
+        );""")
+
+        cur.execute("""CREATE TABLE IF NOT EXISTS UserEggPurchases (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            user_id VARCHAR(255) NOT NULL,
+            egg_type VARCHAR(50) NOT NULL,
+            purchased_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            pet_received VARCHAR(50) NOT NULL,
+            INDEX idx_user_purchases (user_id)
         );""")
 
         # Add columns if missing
@@ -595,16 +627,18 @@ def render_pomodoro():
     if 'pomo_active' not in st.session_state: st.session_state.pomo_active = False
     if 'pomo_start' not in st.session_state: st.session_state.pomo_start = None
     if 'pomo_count' not in st.session_state: st.session_state.pomo_count = 0
-    
-    dur = st.select_slider("Duration", [15,20,25,30,45,60], value=25, format_func=lambda x:f"{x}min")
-    
+    if 'pomo_duration' not in st.session_state: st.session_state.pomo_duration = 25
+
+    dur = st.select_slider("Duration", [15,20,25,30,45,60], value=st.session_state.pomo_duration, format_func=lambda x:f"{x}min")
+    st.session_state.pomo_duration = dur
+
     if st.session_state.pomo_active and st.session_state.pomo_start:
+        # Calculate remaining time
         elapsed = (datetime.now() - st.session_state.pomo_start).total_seconds()
         remain = max(0, dur*60 - elapsed)
-        m, s = int(remain//60), int(remain%60)
-        st.markdown(f'<div class="pomodoro-timer">⏱️ {m:02d}:{s:02d}</div>', unsafe_allow_html=True)
-        st.progress(1 - remain/(dur*60))
+
         if remain <= 0:
+            # Timer completed
             st.session_state.pomo_active = False
             st.session_state.pomo_count += 1
 
@@ -628,14 +662,43 @@ def render_pomodoro():
                 award_badge(st.session_state.user_id, "pomodoro_5")
 
             st.success("🎉 Pomodoro Complete! +25 XP")
-        if st.button("⏹️ Stop"): st.session_state.pomo_active = False; st.rerun()
-        time.sleep(1); st.rerun()
+            st.rerun()
+        else:
+            # Use JavaScript timer to avoid flickering
+            m, s = int(remain//60), int(remain%60)
+            t = get_theme()
+            timer_html = f'''
+            <div class="pomodoro-timer" style="font-size:48px;font-weight:bold;text-align:center;padding:20px;border-radius:12px;border:2px solid {t['accent']};background:{t['bg']};color:{t['text']};">
+                ⏱️ <span id="timer">{m:02d}:{s:02d}</span>
+            </div>
+            <script>
+                let remaining = {int(remain)};
+                const timerEl = document.getElementById('timer');
+                const interval = setInterval(() => {{
+                    remaining--;
+                    const m = Math.floor(remaining / 60);
+                    const s = remaining % 60;
+                    timerEl.textContent = m.toString().padStart(2, '0') + ':' + s.toString().padStart(2, '0');
+                    if (remaining <= 0) {{
+                        clearInterval(interval);
+                        window.parent.location.reload();
+                    }}
+                }}, 1000);
+            </script>
+            '''
+            components.html(timer_html, height=120)
+            st.progress(1 - remain/(dur*60))
+
+            if st.button("⏹️ Stop"):
+                st.session_state.pomo_active = False
+                st.rerun()
     else:
         st.markdown(f'<div class="pomodoro-timer">🍅 {dur}:00</div>', unsafe_allow_html=True)
         if st.button("▶️ Start", type="primary"):
             st.session_state.pomo_active = True
             st.session_state.pomo_start = datetime.now()
             st.rerun()
+
     st.caption(f"Today: {st.session_state.pomo_count} 🍅")
 # =============================================================================
 # 12. LEARNING MODE
