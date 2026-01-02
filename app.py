@@ -73,6 +73,19 @@ def apply_css():
     .level-display {{ background: linear-gradient(135deg, {t['accent']}, #e74c3c); padding: 10px 20px; border-radius: 12px; text-align: center; }}
     .pomodoro-timer {{ font-size: 48px; font-weight: bold; text-align: center; padding: 20px; border-radius: 12px; border: 2px solid {t['accent']}; }}
     .beta-banner {{ background: linear-gradient(90deg, #9b59b6, #3498db); color: white; padding: 8px 15px; border-radius: 8px; text-align: center; font-weight: bold; }}
+
+    /* PERFORMANCE FIXES - Prevent darkening, flickering, and improve transitions */
+    .stApp {{ transition: none !important; opacity: 1 !important; }}
+    .element-container {{ transition: none !important; }}
+    div[data-testid="stAppViewBlockContainer"] {{ opacity: 1 !important; }}
+    .stApp > div:first-child {{ opacity: 1 !important; }}
+    .stApp::before {{ display: none !important; }}
+    .stSpinner {{ display: none !important; }}
+    div[data-testid="stStatusWidget"] {{ display: none !important; }}
+
+    /* Prevent loading overlay dimming */
+    .st-emotion-cache-1wrcr25 {{ opacity: 1 !important; }}
+    .st-emotion-cache-z5fcl4 {{ opacity: 1 !important; }}
 </style>""", unsafe_allow_html=True)
 apply_css()
 
@@ -1597,7 +1610,6 @@ if st.session_state.beta_mode:
                 conn.commit()
                 cur.close()
                 conn.close()
-            st.rerun()
     
     st.caption(f"⚡ Flash: {100-st.session_state.flash_usage}/100 | 🧠 Ultra: {5-st.session_state.pro_usage}/5")
     st.markdown("---")
@@ -2237,8 +2249,7 @@ with tabs[4]:
             conn.commit()
             cur.close()
             conn.close()
-        st.rerun()
-    
+
     new_theme = st.selectbox("Theme", list(THEMES.keys()), index=list(THEMES.keys()).index(st.session_state.theme))
     if new_theme != st.session_state.theme:
         st.session_state.theme = new_theme
@@ -2250,13 +2261,11 @@ with tabs[4]:
             conn.commit()
             cur.close()
             conn.close()
-        st.rerun()
-    
+
     st.markdown("---")
     sounds_toggle = st.toggle("🔊 Sound Effects", value=st.session_state.get('sounds_enabled', True))
     if sounds_toggle != st.session_state.sounds_enabled:
         st.session_state.sounds_enabled = sounds_toggle
-        st.rerun()
 
     st.markdown("---")
     new_goal = st.slider("🎯 Daily Lesson Goal", min_value=1, max_value=10, value=st.session_state.get('daily_goal', 3))
@@ -2270,7 +2279,6 @@ with tabs[4]:
             conn.commit()
             cur.close()
             conn.close()
-        st.rerun()
 
     st.markdown("---")
     st.markdown(f"**Your Stats:**")
