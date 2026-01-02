@@ -1360,58 +1360,122 @@ if not st.session_state.authenticated:
     c1,c2,c3 = st.columns([1,6,1])
     with c2:
         st.title("🔐 Sorokin Portal")
+
+        # Beta Disclaimer Banner
+        st.markdown("""
+        <div style="background: linear-gradient(90deg, #e74c3c, #c0392b);
+                    padding: 15px 20px;
+                    border-radius: 12px;
+                    margin: 20px 0;
+                    border: 2px solid #ff6b6b;
+                    box-shadow: 0 4px 15px rgba(231, 76, 60, 0.3);">
+            <h3 style="margin: 0 0 10px 0; color: white; text-align: center;">⚠️ BETA VERSION</h3>
+            <p style="margin: 0; color: white; font-size: 14px; text-align: center; line-height: 1.6;">
+                This is a test version of Sorokin Portal. Your data may be deleted during testing.<br>
+                All content is AI-generated and <strong>may contain errors</strong>.<br>
+                This service is <strong>not available in the European Union</strong>.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
+
         t1,t2,t3,t4 = st.tabs(["Login","Register","Plans","🧪 Beta"])
         
         with t1:
             u = st.text_input("Username", key="lu")
             p = st.text_input("Password", type="password", key="lp")
+
+            # Required Agreements
+            st.markdown("""
+            <div style="background: rgba(255,255,255,0.05);
+                        padding: 20px;
+                        border-radius: 12px;
+                        margin: 20px 0;
+                        border: 1px solid rgba(255,255,255,0.1);">
+                <h4 style="margin: 0 0 15px 0; color: #f1c40f;">✅ Required Agreements</h4>
+            </div>
+            """, unsafe_allow_html=True)
+
+            age_confirm_login = st.checkbox("I confirm I am 13 years of age or older", key="age_check_login")
+            ai_confirm_login = st.checkbox("I understand that all content is AI-generated and may contain errors", key="ai_check_login")
+            eu_confirm_login = st.checkbox("I confirm I am NOT located in the European Union", key="eu_check_login")
+
             if st.button("Log In", type="primary", use_container_width=True):
-                conn = get_db()
-                if conn:
-                    cur = conn.cursor(dictionary=True)
-                    cur.execute(f"USE {st.secrets['DB_NAME']};")
-                    cur.execute("SELECT * FROM Users WHERE username=%s", (u,))
-                    user = cur.fetchone()
-                    if user and bcrypt.checkpw(p.encode(), user['hashed_password'].encode()):
-                        today = datetime.now().strftime("%Y-%m-%d")
-                        if user['last_active_date'] != today:
-                            cur.execute("UPDATE Users SET flash_usage=0,pro_usage=0,last_active_date=%s WHERE user_id=%s", (today,user['user_id']))
+                if not age_confirm_login:
+                    st.error("⛔ You must confirm you are 13 years or older to use this service.")
+                elif not ai_confirm_login:
+                    st.error("⛔ You must acknowledge that AI content may contain errors.")
+                elif not eu_confirm_login:
+                    st.error("⛔ This service is not available in the European Union.")
+                else:
+                    conn = get_db()
+                    if conn:
+                        cur = conn.cursor(dictionary=True)
+                        cur.execute(f"USE {st.secrets['DB_NAME']};")
+                        cur.execute("SELECT * FROM Users WHERE username=%s", (u,))
+                        user = cur.fetchone()
+                        if user and bcrypt.checkpw(p.encode(), user['hashed_password'].encode()):
+                            today = datetime.now().strftime("%Y-%m-%d")
+                            if user['last_active_date'] != today:
+                                cur.execute("UPDATE Users SET flash_usage=0,pro_usage=0,last_active_date=%s WHERE user_id=%s", (today,user['user_id']))
+                                conn.commit()
+                                user['flash_usage'] = user['pro_usage'] = 0
+                            sid = f"S_{uuid.uuid4().hex[:4]}"
+                            st.session_state.update({
+                                'authenticated': True, 'user_id': user['user_id'], 'grade': user['grade'],
+                                'session_id': sid, 'flash_usage': user['flash_usage'], 'pro_usage': user['pro_usage'],
+                                'total_xp': user.get('total_xp',0) or 0, 'level': user.get('level',1) or 1,
+                                'theme': user.get('theme','Auto') or 'Auto', 'beta_mode': False
+                            })
+                            cur.execute("UPDATE Users SET session_id=%s WHERE user_id=%s", (sid,user['user_id']))
+                            cur.execute("INSERT INTO ChatLogs (session_id,user_id,title,messages) VALUES (%s,%s,'New','[]')", (sid,user['user_id']))
                             conn.commit()
-                            user['flash_usage'] = user['pro_usage'] = 0
-                        sid = f"S_{uuid.uuid4().hex[:4]}"
-                        st.session_state.update({
-                            'authenticated': True, 'user_id': user['user_id'], 'grade': user['grade'],
-                            'session_id': sid, 'flash_usage': user['flash_usage'], 'pro_usage': user['pro_usage'],
-                            'total_xp': user.get('total_xp',0) or 0, 'level': user.get('level',1) or 1,
-                            'theme': user.get('theme','Auto') or 'Auto', 'beta_mode': False
-                        })
-                        cur.execute("UPDATE Users SET session_id=%s WHERE user_id=%s", (sid,user['user_id']))
-                        cur.execute("INSERT INTO ChatLogs (session_id,user_id,title,messages) VALUES (%s,%s,'New','[]')", (sid,user['user_id']))
-                        conn.commit()
-                        load_user(user['user_id'])
-                        st.rerun()
-                    else: st.error("Invalid credentials")
-                    cur.close()
-                    conn.close()
+                            load_user(user['user_id'])
+                            st.rerun()
+                        else: st.error("Invalid credentials")
+                        cur.close()
+                        conn.close()
         
         with t2:
             nu = st.text_input("Username", key="ru")
             np = st.text_input("Password", type="password", key="rp")
             ng = st.selectbox("Grade", GRADES, key="rg")
+
+            # Required Agreements
+            st.markdown("""
+            <div style="background: rgba(255,255,255,0.05);
+                        padding: 20px;
+                        border-radius: 12px;
+                        margin: 20px 0;
+                        border: 1px solid rgba(255,255,255,0.1);">
+                <h4 style="margin: 0 0 15px 0; color: #f1c40f;">✅ Required Agreements</h4>
+            </div>
+            """, unsafe_allow_html=True)
+
+            age_confirm_reg = st.checkbox("I confirm I am 13 years of age or older", key="age_check_register")
+            ai_confirm_reg = st.checkbox("I understand that all content is AI-generated and may contain errors", key="ai_check_register")
+            eu_confirm_reg = st.checkbox("I confirm I am NOT located in the European Union", key="eu_check_register")
+
             if st.button("Register", type="primary", use_container_width=True):
-                conn = get_db()
-                if conn:
-                    cur = conn.cursor()
-                    cur.execute(f"USE {st.secrets['DB_NAME']};")
-                    try:
-                        h = bcrypt.hashpw(np.encode(), bcrypt.gensalt()).decode()
-                        uid, sid = f"U_{uuid.uuid4().hex[:4]}", f"S_{uuid.uuid4().hex[:4]}"
-                        cur.execute("INSERT INTO Users (username,hashed_password,grade,user_id,session_id,last_active_date,total_xp,level,theme) VALUES (%s,%s,%s,%s,%s,%s,0,1,'Auto')", (nu,h,ng,uid,sid,datetime.now().strftime("%Y-%m-%d")))
-                        conn.commit()
-                        st.success("Created! Log in now.")
-                    except: st.error("Username taken")
-                    cur.close()
-                    conn.close()
+                if not age_confirm_reg:
+                    st.error("⛔ You must confirm you are 13 years or older to use this service.")
+                elif not ai_confirm_reg:
+                    st.error("⛔ You must acknowledge that AI content may contain errors.")
+                elif not eu_confirm_reg:
+                    st.error("⛔ This service is not available in the European Union.")
+                else:
+                    conn = get_db()
+                    if conn:
+                        cur = conn.cursor()
+                        cur.execute(f"USE {st.secrets['DB_NAME']};")
+                        try:
+                            h = bcrypt.hashpw(np.encode(), bcrypt.gensalt()).decode()
+                            uid, sid = f"U_{uuid.uuid4().hex[:4]}", f"S_{uuid.uuid4().hex[:4]}"
+                            cur.execute("INSERT INTO Users (username,hashed_password,grade,user_id,session_id,last_active_date,total_xp,level,theme) VALUES (%s,%s,%s,%s,%s,%s,0,1,'Auto')", (nu,h,ng,uid,sid,datetime.now().strftime("%Y-%m-%d")))
+                            conn.commit()
+                            st.success("Created! Log in now.")
+                        except: st.error("Username taken")
+                        cur.close()
+                        conn.close()
         
         with t3:
             st.markdown("### Plans\n| Feature | Free | Pro |\n|---|---|---|\n| Flash | 100/day | ∞ |\n| Ultra | 5/day | 50/day |")
@@ -1421,30 +1485,53 @@ if not st.session_state.authenticated:
             st.markdown("- ⚡ XP & Leveling\n- 🏆 Badges\n- 📝 Quizzes\n- 🍅 Pomodoro\n- 🎨 Themes")
             bu = st.text_input("Username", key="bu")
             bp = st.text_input("Password", type="password", key="bp")
+
+            # Required Agreements
+            st.markdown("""
+            <div style="background: rgba(255,255,255,0.05);
+                        padding: 20px;
+                        border-radius: 12px;
+                        margin: 20px 0;
+                        border: 1px solid rgba(255,255,255,0.1);">
+                <h4 style="margin: 0 0 15px 0; color: #f1c40f;">✅ Required Agreements</h4>
+            </div>
+            """, unsafe_allow_html=True)
+
+            age_confirm_beta = st.checkbox("I confirm I am 13 years of age or older", key="age_check_beta")
+            ai_confirm_beta = st.checkbox("I understand that all content is AI-generated and may contain errors", key="ai_check_beta")
+            eu_confirm_beta = st.checkbox("I confirm I am NOT located in the European Union", key="eu_check_beta")
+
             if st.button("🚀 Enter Beta", type="primary", use_container_width=True):
-                conn = get_db()
-                if conn:
-                    cur = conn.cursor(dictionary=True)
-                    cur.execute(f"USE {st.secrets['DB_NAME']};")
-                    cur.execute("SELECT * FROM Users WHERE username=%s", (bu,))
-                    user = cur.fetchone()
-                    if user and bcrypt.checkpw(bp.encode(), user['hashed_password'].encode()):
-                        today = datetime.now().strftime("%Y-%m-%d")
-                        if user['last_active_date'] != today:
-                            cur.execute("UPDATE Users SET flash_usage=0,pro_usage=0,last_active_date=%s WHERE user_id=%s", (today,user['user_id']))
-                            conn.commit()
-                            user['flash_usage'] = user['pro_usage'] = 0
-                        st.session_state.update({
-                            'authenticated': True, 'beta_mode': True, 'user_id': user['user_id'],
-                            'grade': user['grade'], 'flash_usage': user['flash_usage'], 'pro_usage': user['pro_usage'],
-                            'total_xp': user.get('total_xp',0) or 0, 'level': user.get('level',1) or 1,
-                            'theme': user.get('theme','Auto') or 'Auto'
-                        })
-                        load_user(user['user_id'])
-                        st.rerun()
-                    else: st.error("Invalid credentials")
-                    cur.close()
-                    conn.close()
+                if not age_confirm_beta:
+                    st.error("⛔ You must confirm you are 13 years or older to use this service.")
+                elif not ai_confirm_beta:
+                    st.error("⛔ You must acknowledge that AI content may contain errors.")
+                elif not eu_confirm_beta:
+                    st.error("⛔ This service is not available in the European Union.")
+                else:
+                    conn = get_db()
+                    if conn:
+                        cur = conn.cursor(dictionary=True)
+                        cur.execute(f"USE {st.secrets['DB_NAME']};")
+                        cur.execute("SELECT * FROM Users WHERE username=%s", (bu,))
+                        user = cur.fetchone()
+                        if user and bcrypt.checkpw(bp.encode(), user['hashed_password'].encode()):
+                            today = datetime.now().strftime("%Y-%m-%d")
+                            if user['last_active_date'] != today:
+                                cur.execute("UPDATE Users SET flash_usage=0,pro_usage=0,last_active_date=%s WHERE user_id=%s", (today,user['user_id']))
+                                conn.commit()
+                                user['flash_usage'] = user['pro_usage'] = 0
+                            st.session_state.update({
+                                'authenticated': True, 'beta_mode': True, 'user_id': user['user_id'],
+                                'grade': user['grade'], 'flash_usage': user['flash_usage'], 'pro_usage': user['pro_usage'],
+                                'total_xp': user.get('total_xp',0) or 0, 'level': user.get('level',1) or 1,
+                                'theme': user.get('theme','Auto') or 'Auto'
+                            })
+                            load_user(user['user_id'])
+                            st.rerun()
+                        else: st.error("Invalid credentials")
+                        cur.close()
+                        conn.close()
     st.stop()
 # =============================================================================
 # 15. LESSON MODAL
